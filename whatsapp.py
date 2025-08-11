@@ -305,21 +305,19 @@ def send_message_with_photo(driver, message):
         gallery_btn.click()
         time.sleep(3)
         
-        # Step 3: Select the first photo in gallery (most recent)
-        # Find the gallery grid container
-        gallery_container = driver.find_element(AppiumBy.ID, "com.whatsapp.w4b:id/gallery_picker_layout")
-        
-        # Get the first photo in the grid (index 0)
-        first_photo = gallery_container.find_elements(AppiumBy.CLASS_NAME, "android.widget.ImageView")[0]
-        
-        # Tap the first photo
+        # Step 3: Select the first photo in gallery using dynamic XPath
+        # This will work regardless of the specific date in the image name
+        first_photo = driver.find_element(
+            AppiumBy.XPATH,
+            "(//android.widget.ImageView[contains(@content-desc, 'Photo, date')])[1]"
+        )
         first_photo.click()
         time.sleep(2)
         
         # Step 4: Add message to photo caption
         message_input = driver.find_element(
             AppiumBy.XPATH,
-            "//android.widget.EditText"
+            "//android.widget.EditText[@resource-id='com.whatsapp.w4b:id/caption']"
         )
         message_input.clear()
         message_input.send_keys(message)
