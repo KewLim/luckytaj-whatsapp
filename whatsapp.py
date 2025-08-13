@@ -3,11 +3,30 @@
 from appium import webdriver
 from appium.options.android import UiAutomator2Options
 from appium.webdriver.common.appiumby import AppiumBy
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import time
 import os
 import base64
+import signal
+import sys
 from datetime import datetime
+
+def signal_handler(sig, frame):
+    """Handle Ctrl+C gracefully"""
+    print("\033[1;35m\n\n🛑 Stopping automation (Ctrl+C pressed)...\033[0m")
+    print("Cleaning up...")
+    try:
+        # Try to quit driver if it exists
+        import gc
+        for obj in gc.get_objects():
+            if hasattr(obj, 'quit') and 'webdriver' in str(type(obj)):
+                obj.quit()
+                break
+    except:
+        pass
+    os._exit(0)
 
 def setup_driver():
     """Initialize Appium driver with Android capabilities"""
@@ -287,145 +306,318 @@ def transfer_photo_to_device(driver, local_photo_path):
         return None
 
 def send_message_with_photo(driver, message):
-    """Attach photo first, then add message, then send everything together"""
+    """Optimized photo + message sending - target: under 8 seconds"""
+    start_time = time.time()
+    print(f"[INFO] Fast photo + message send...")
+    
     try:
-        # Step 1: Click attachment button
-        attachment_btn = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.ImageButton[contains(@resource-id, 'attach')]"
+        wait = WebDriverWait(driver, timeout=10, poll_frequency=0.2)  #  second timeout for each element
+        
+        # Step 1: Click attachment button (parallel search with EC.any_of)
+        step_start = time.time()
+        attachment_selectors = [
+            (AppiumBy.ID, "com.whatsapp.w4b:id/attach"),
+            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/attach']"),
+            (AppiumBy.XPATH, "//android.widget.ImageButton[contains(@resource-id, 'attach')]")
+        ]
+        
+        # Use EC.any_of for parallel search
+        attachment_btn = wait.until(
+            EC.any_of(
+                *[EC.element_to_be_clickable(selector) for selector in attachment_selectors]
+            )
         )
         attachment_btn.click()
-        time.sleep(2)
+        time.sleep(0.8)  # Reduced from 2s
+        print(f"[INFO] Attachment clicked ({time.time() - step_start:.2f}s)")
         
-        # Step 2: Click Gallery option
-        gallery_btn = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.TextView[contains(@text, 'Gallery')]"
-        )
+        # Step 2: Click Gallery 
+        step_start = time.time()
+        gallery_selectors = [
+            (AppiumBy.XPATH, "//*[@text='Gallery']"),
+            (AppiumBy.XPATH, "//android.widget.TextView[@text='Gallery']")
+        ]
+        
+        gallery_btn = None
+        for selector_type, selector in gallery_selectors:
+            try:
+                gallery_btn = wait.until(EC.element_to_be_clickable((selector_type, selector)))
+                break
+            except TimeoutException:
+                continue
+                
+        if not gallery_btn:
+            raise Exception("Gallery button not found")
+            
         gallery_btn.click()
-        time.sleep(3)
+        time.sleep(1.2)  # Reduced from 3s
+        print(f"🖼️ Gallery opened ({time.time() - step_start:.2f}s)")
         
-        # Step 3: Select the first photo in gallery using dynamic XPath
-        # This will work regardless of the specific date in the image name
-        first_photo = driver.find_element(
-            AppiumBy.XPATH,
-            "(//android.widget.ImageView[contains(@content-desc, 'Photo, date')])[1]"
+        # Step 3: Select first photo (fast optimized selectors)
+        step_start = time.time()
+        fast_wait = WebDriverWait(driver, timeout=3, poll_frequency=0.1)  # Much faster timeout
+        
+        photo_selectors = [
+            # More specific and faster selectors
+            (AppiumBy.XPATH, "//android.widget.ImageView[1]"),
+            (AppiumBy.XPATH, "(//android.widget.ImageView)[1]"),
+            (AppiumBy.XPATH, "//*[contains(@content-desc, 'Photo')][1]"),
+            (AppiumBy.XPATH, "(//android.widget.ImageView[contains(@content-desc, 'Photo')])[1]"),
+            (AppiumBy.CLASS_NAME, "android.widget.ImageView"),  # Fallback to first ImageView
+            (AppiumBy.XPATH, "//*[@clickable='true'][1]")  # Last resort - first clickable element
+        ]
+        
+        first_photo = WebDriverWait(driver, timeout=5, poll_frequency=0.1).until(
+            EC.any_of(*[EC.element_to_be_clickable(sel) for sel in photo_selectors])
         )
         first_photo.click()
-        time.sleep(2)
+        print(f"📸 Photo selected ({time.time() - step_start:.2f}s)")
         
-        # Step 4: Add message to photo caption
-        message_input = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.EditText[@resource-id='com.whatsapp.w4b:id/caption']"
+        # Step 4: Add caption (parallel search with EC.any_of)
+        step_start = time.time()
+        caption_selectors = [
+            (AppiumBy.ID, "com.whatsapp.w4b:id/caption"),
+            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/caption']"),
+            (AppiumBy.XPATH, "//android.widget.EditText[contains(@resource-id, 'caption')]")
+        ]
+        
+        # Use EC.any_of for parallel search
+        message_input = wait.until(
+            EC.any_of(
+                *[EC.element_to_be_clickable(selector) for selector in caption_selectors]
+            )
         )
+        
+        # Fast text input using direct method
+        message_input.click()
+        time.sleep(0.1)
         message_input.clear()
-        message_input.send_keys(message)
-        time.sleep(1)
         
-        # Step 5: Send the photo with message
-        send_photo_btn = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.ImageButton[contains(@resource-id, 'send')]"
+        # Use fast text input - try multiple methods
+        try:
+            # Method 1: Direct value setting (fastest)
+            driver.execute_script("mobile: type", {"text": message})
+        except:
+            try:
+                # Method 2: ADB input (fast)
+                message_input.send_keys(message)
+            except:
+                # Method 3: Fallback
+                for char in message:
+                    message_input.send_keys(char)
+                    
+        print(f"✏️ Caption added ({time.time() - step_start:.2f}s)")
+        
+        # Step 5: Send (parallel search with EC.any_of)
+        step_start = time.time()
+        send_selectors = [
+            (AppiumBy.ID, "com.whatsapp.w4b:id/send"),
+            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/send']"),
+            (AppiumBy.XPATH, "//android.widget.ImageButton[contains(@resource-id, 'send')]")
+        ]
+        
+        # Use EC.any_of for parallel search
+        send_btn = wait.until(
+            EC.any_of(
+                *[EC.element_to_be_clickable(selector) for selector in send_selectors]
+            )
         )
-        send_photo_btn.click()
-        time.sleep(2)
         
+        send_btn.click()
+        time.sleep(0.8)  # Reduced from 2s
+        print(f"📤 Sent ({time.time() - step_start:.2f}s)")
+        
+        total_time = time.time() - start_time
+        print(f"🎉 Photo+message sent! Total: {total_time:.2f}s")
         return True
         
     except Exception as e:
-        print(f"Error sending photo with message: {str(e)}")
+        total_time = time.time() - start_time
+        print(f"❌ Error after {total_time:.2f}s: {str(e)}")
         return False
 
 def find_next_lucky_taj_chat(driver):
-    """Find the first LuckyTaj♠️ chat from top to bottom without unread messages"""
+    """Find the first LuckyTaj♠️ chat by checking numbered xpath positions with parallel search"""
+    search_start = time.time()
+    print(f"[INFO] Searching for LuckyTaj chats using numbered xpath...")
+    
     try:
-        # Find all chat titles containing LuckyTaj♠️
-        chat_elements = driver.find_elements(
-            AppiumBy.XPATH,
-            "//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name') and contains(@text, 'LuckyTaj♠️')]"
-        )
+        wait = WebDriverWait(driver, timeout=5, poll_frequency=0.2)
         
-        # Sort by Y position (top to bottom)
-        chat_elements.sort(key=lambda element: element.location['y'])
+        # Start checking from chat position [1] and increment
+        chat_position = 1
+        max_chats_to_check = 50  # Reasonable limit to avoid infinite loop
         
-        # Check each chat from top to bottom
-        for chat_element in chat_elements:
+        while chat_position <= max_chats_to_check:
             try:
-                chat_name = chat_element.text
-                print(f"Checking chat: {chat_name}")
+                print(f"[Search] Checking chat position [{chat_position}]...")
                 
-                # Check if this chat has unread messages
-                chat_location = chat_element.location
-                unread_elements = driver.find_elements(
-                    AppiumBy.XPATH,
-                    "//android.view.View[contains(@content-desc, 'unread message')]"
-                )
+                # Use numbered xpath with parallel search for better reliability
+                chat_container_selectors = [
+                    (AppiumBy.XPATH, f"(//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container'])[{chat_position}]"),
+                    (AppiumBy.XPATH, f"(//android.widget.LinearLayout[contains(@resource-id, 'contact_row_container')])[{chat_position}]"),
+                    (AppiumBy.XPATH, f"(//android.view.ViewGroup[@resource-id='com.whatsapp.w4b:id/contact_row_container'])[{chat_position}]")
+                ]
                 
-                has_unread = False
-                for unread_elem in unread_elements:
-                    unread_location = unread_elem.location
-                    if abs(unread_location['y'] - chat_location['y']) <= 50:
-                        has_unread = True
-                        print(f"Skipping {chat_name} - has unread messages")
+                # Use EC.any_of for parallel search of chat container
+                try:
+                    chat_container = wait.until(
+                        EC.any_of(
+                            *[EC.presence_of_element_located(selector) for selector in chat_container_selectors]
+                        )
+                    )
+                except TimeoutException:
+                    print(f"❌ No more chats found at position [{chat_position}]")
+                    break
+                
+                # Get chat name from this container using parallel search
+                chat_name_selectors = [
+                    (AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"),
+                    (AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'contact_name')]"),
+                    (AppiumBy.XPATH, ".//android.widget.TextView[@content-desc]")
+                ]
+                
+                chat_name_element = None
+                for selector_type, selector in chat_name_selectors:
+                    try:
+                        chat_name_element = chat_container.find_element(selector_type, selector)
                         break
+                    except:
+                        continue
                 
-                if not has_unread:
-                    print(f"Found target chat: {chat_name}")
-                    return chat_element
-                    
+                if not chat_name_element:
+                    print(f"⏭️ Skipping position [{chat_position}] - no chat name found")
+                    chat_position += 1
+                    continue
+                
+                chat_name = chat_name_element.text
+                print(f"[Found] Chat at position [{chat_position}]: {chat_name}")
+                
+                # Check if this chat contains "LuckyTaj♠️"
+                if "LuckyTaj♠️" in chat_name:
+                    # Check if this chat has unread messages
+                    unread_check_start = time.time()
+                    try:
+                        unread_element = chat_container.find_element(
+                            AppiumBy.XPATH, 
+                            ".//android.view.View[contains(@content-desc, 'unread message')]"
+                        )
+                        unread_check_time = time.time() - unread_check_start
+                        print(f"⏭️ Skipping {chat_name} - has unread messages (check took {unread_check_time:.2f}s)")
+                        chat_position += 1
+                        continue
+                    except:
+                        # No unread messages found, this is our target
+                        total_time = time.time() - search_start
+                        print(f"\033[1;35m🎯 Found target chat: {chat_name} at position [{chat_position}] (total search time: {total_time:.2f}s)\033[0m")
+                        return chat_container
+                
+                # Not a LuckyTaj chat, continue to next position
+                chat_position += 1
+                
             except Exception as e:
-                print(f"Error checking chat: {str(e)}")
+                print(f"❌ Error checking position [{chat_position}]: {str(e)}")
+                chat_position += 1
                 continue
         
-        print("No LuckyTaj chats without unread messages found")
+        total_time = time.time() - search_start
+        print(f"❌ No LuckyTaj chats without unread messages found after checking {chat_position-1} positions (total time: {total_time:.2f}s)")
         return None
         
     except Exception as e:
-        print(f"Error finding LuckyTaj chats: {str(e)}")
+        total_time = time.time() - search_start
+        print(f"❌ Error finding LuckyTaj chats after {total_time:.2f}s: {str(e)}")
         return None
 
 def scroll_down_chat_list(driver):
     """Scroll down in the chat list to find more chats"""
     try:
+        scroll_start = time.time()
+        print(f"📜 Scrolling down chat list...")
+        
         screen_size = driver.get_window_size()
         start_x = screen_size['width'] // 2
         start_y = screen_size['height'] * 3 // 4
         end_y = screen_size['height'] // 4
         
-        driver.swipe(start_x, start_y, start_x, end_y, 1000)
-        time.sleep(1)
+        driver.swipe(start_x, start_y, start_x, end_y, 400)  # Faster swipe
+        time.sleep(0.5)  # Reduced wait time
+        
+        scroll_time = time.time() - scroll_start
+        print(f"✓ Scroll completed in {scroll_time:.2f}s")
         return True
     except Exception as e:
-        print(f"Error scrolling: {str(e)}")
+        scroll_time = time.time() - scroll_start
+        print(f"❌ Error scrolling after {scroll_time:.2f}s: {str(e)}")
         return False
 
 def send_message_to_chat(driver, message):
-    """Send message to the currently opened chat"""
+    """Optimized text message sending - target: under 3 seconds"""
+    start_time = time.time()
+    print(f"[INFO] Fast text send...")
+    
     try:
-        # Find the message input field
-        message_input = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.EditText[contains(@resource-id, 'entry')]"
-        )
+        wait = WebDriverWait(driver, 2)  # 2 second timeout
         
-        # Clear any existing text and send message
+        # Find message input (faster selectors)
+        input_selectors = [
+            (AppiumBy.ID, "com.whatsapp.w4b:id/entry"),
+            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/entry']"),
+            (AppiumBy.XPATH, "//android.widget.EditText[contains(@resource-id, 'entry')]")
+        ]
+        
+        message_input = None
+        for selector_type, selector in input_selectors:
+            try:
+                message_input = wait.until(EC.element_to_be_clickable((selector_type, selector)))
+                break
+            except TimeoutException:
+                continue
+                
+        if not message_input:
+            raise Exception("Message input not found")
+        
+        # Fast text input
+        step_start = time.time()
+        message_input.click()
         message_input.clear()
-        message_input.send_keys(message)
         
-        # Find and tap the send button
-        send_button = driver.find_element(
-            AppiumBy.XPATH,
-            "//android.widget.ImageButton[contains(@resource-id, 'send')]"
-        )
+        # Try fast text input methods
+        try:
+            driver.execute_script("mobile: type", {"text": message})
+        except:
+            message_input.send_keys(message)
+            
+        print(f"📝 Text entered ({time.time() - step_start:.2f}s)")
+        
+        # Find and click send button (faster)
+        send_selectors = [
+            (AppiumBy.ID, "com.whatsapp.w4b:id/send"),
+            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/send']"),
+            (AppiumBy.XPATH, "//android.widget.ImageButton[contains(@resource-id, 'send')]")
+        ]
+        
+        send_button = None
+        for selector_type, selector in send_selectors:
+            try:
+                send_button = wait.until(EC.element_to_be_clickable((selector_type, selector)))
+                break
+            except TimeoutException:
+                continue
+                
+        if not send_button:
+            raise Exception("Send button not found")
+            
         send_button.click()
+        time.sleep(0.5)  # Reduced from 2s
         
-        print(f"Message sent: {message}")
-        time.sleep(2)
+        total_time = time.time() - start_time
+        print(f"🎉 Text sent! Total: {total_time:.2f}s")
         return True
         
     except Exception as e:
-        print(f"Error sending message: {str(e)}")
+        total_time = time.time() - start_time
+        print(f"❌ Error after {total_time:.2f}s: {str(e)}")
         return False
 
 def go_back_to_chat_list(driver):
@@ -433,7 +625,7 @@ def go_back_to_chat_list(driver):
     try:
         # Press back button to return to chat list
         driver.press_keycode(4)  # KEYCODE_BACK
-        time.sleep(2)
+        time.sleep(1.5)
         return True
     except Exception as e:
         print(f"Error going back to chat list: {str(e)}")
@@ -470,49 +662,72 @@ def process_lucky_taj_chats(driver):
     
     # Load previously processed chats for today
     processed_chats, log_file = load_processed_chats_today()
-    max_scrolls = 15  # Increased scroll limit for better coverage
+    max_scrolls = 100  # Increased scroll limit for better coverage
     scroll_count = 0
+    
+    overall_start = time.time()
+    print(f"[INFO] Starting chat processing loop (max {max_scrolls} scrolls)")
     
     while scroll_count < max_scrolls:
         # Find the next LuckyTaj chat from top to bottom
+        print(f"\n[INFO] Loop iteration {scroll_count + 1}/{max_scrolls}")
         target_chat = find_next_lucky_taj_chat(driver)
         
         if target_chat:
             try:
+                chat_processing_start = time.time()
                 chat_name = target_chat.text
                 
                 # Skip if already processed
                 if chat_name in processed_chats:
-                    print(f"Already processed: {chat_name}")
+                    print(f"⏭️ Already processed: {chat_name}")
                     scroll_down_chat_list(driver)
                     scroll_count += 1
                     continue
                 
-                print(f"Processing: {chat_name}")
+                print(f"\033[1;33m🔄 Processing: {chat_name}\033[0m")
                 
                 # Click on the chat
+                click_start = time.time()
+                print(f"[INFO] Clicking on chat: {chat_name}")
                 target_chat.click()
-                time.sleep(2)
+                time.sleep(1)  # Reduced from 2s
+                click_time = time.time() - click_start
+                print(f"[CHECKED] Chat opened in {click_time:.2f}s")
                 
                 # Send the daily message (with photo if available)
+                message_start = time.time()
                 if send_photo:
                     success = send_message_with_photo(driver, daily_message)
                 else:
                     success = send_message_to_chat(driver, daily_message)
+                message_time = time.time() - message_start
                 
                 if success:
                     message_type = "message + photo" if send_photo else "message"
-                    print(f"✓ Successfully sent {message_type} to: {chat_name}")
+                    print(f"✅ Successfully sent {message_type} to: {chat_name} (message time: {message_time:.2f}s)")
                     processed_chats.add(chat_name)
                     save_processed_chat(log_file, chat_name)
                 else:
                     message_type = "message + photo" if send_photo else "message"
-                    print(f"✗ Failed to send {message_type} to: {chat_name}")
+                    print(f"❌ Failed to send {message_type} to: {chat_name} (failed after: {message_time:.2f}s)")
                     processed_chats.add(chat_name)
                     save_processed_chat(log_file, f"FAILED: {chat_name}")
                 
                 # Go back to chat list
-                go_back_to_chat_list(driver)
+                back_start = time.time()
+                print(f"🔙 Going back to chat list...")
+                driver.press_keycode(4)  # KEYCODE_BACK - faster than function call
+                time.sleep(0.8)  # Reduced from 2s
+                back_time = time.time() - back_start
+                print(f"[CHECKED] Returned to chat list in {back_time:.2f}s")
+                
+                total_chat_time = time.time() - chat_processing_start
+                print(f"⏱️ Total time for {chat_name}: {total_chat_time:.2f}s")
+                print(f"   - Chat click + open: {click_time:.2f}s")
+                print(f"   - Message sending: {message_time:.2f}s") 
+                print(f"   - Back to list: {back_time:.2f}s")
+                print("─" * 50)
                 
                 # Continue to find more chats
                 continue
@@ -527,12 +742,18 @@ def process_lucky_taj_chats(driver):
             print(f"No more LuckyTaj chats on screen. Scrolling... ({scroll_count + 1}/{max_scrolls})")
             if scroll_down_chat_list(driver):
                 scroll_count += 1
-                time.sleep(2)
+                time.sleep(0.5)  # Reduced from 2s
             else:
                 print("Cannot scroll further, ending search")
                 break
     
-    print(f"Processing complete! Sent messages to {len(processed_chats)} LuckyTaj chats:")
+    overall_time = time.time() - overall_start
+    print(f"\n[INFO] Processing complete! Total time: {overall_time:.2f}s")
+    print(f"[INFO] Summary:")
+    print(f"   - Chats processed: {len(processed_chats)}")
+    print(f"   - Scrolls performed: {scroll_count}/{max_scrolls}")
+    print(f"   - Average time per chat: {overall_time/max(len(processed_chats), 1):.2f}s")
+    print(f"\n[INFO] Sent messages to {len(processed_chats)} LuckyTaj chats:")
     for chat_name in processed_chats:
         print(f"  - {chat_name}")
 
@@ -549,9 +770,6 @@ def main():
         
         if success:
             print("Device is ready for automation!")
-
-
-            # Swipe to home screen to ensure we're on home screen
             
             # Open WhatsApp Business after successful unlock
             whatsapp_success = open_whatsapp_business(driver)
@@ -559,7 +777,27 @@ def main():
             if whatsapp_success:
                 print("WhatsApp Business is now open and ready for use!")
                 # Brief pause to ensure app is fully loaded
-                time.sleep(3)
+                time.sleep(1.8)
+                
+                # Scroll up to ensure filter buttons are visible
+                try:
+                    print("Scrolling up to reveal filter buttons...")
+                    driver.swipe(540, 300, 540, 600, 200)  # Swipe from middle-top to middle-bottom
+                    time.sleep(0.1)
+                    print("Scroll up completed")
+                except Exception as e:
+                    print(f"Failed to scroll up: {str(e)}")
+                
+                # Click on Groups filter button first
+                try:
+                    print("Looking for Groups filter button...")
+                    group_button = driver.find_element(AppiumBy.XPATH, "//android.widget.RadioButton[contains(@content-desc, 'Groups filter') and contains(@content-desc, 'unselected')]")
+                    print("Found Groups filter button, clicking...")
+                    group_button.click()
+                    time.sleep(1)
+                    print("Successfully clicked Groups filter")
+                except Exception as e:
+                    print(f"Groups filter button not found or already selected: {str(e)}")
                 
                 # Process LuckyTaj chats and send daily messages
                 process_lucky_taj_chats(driver)
@@ -584,4 +822,9 @@ def main():
             driver.quit()
 
 if __name__ == "__main__":
+    # Set up signal handlers for stopping
+    signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # Kill command
+    print("🚦 Press Ctrl+C to stop the automation at any time")
+    print("   (Note: On macOS terminal, use Ctrl+C, not Cmd+C)")
     main()
