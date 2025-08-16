@@ -6,9 +6,6 @@ from appium.webdriver.common.appiumby import AppiumBy
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.actions.action_builder import ActionBuilder
-from selenium.webdriver.common.actions.pointer_input import PointerInput
 import time
 import os
 import signal
@@ -182,7 +179,7 @@ def find_next_chat_without_unread(driver, start_position=1):
                         continue
                 
                 if not chat_name_element:
-                    print(f"\033[91m[INFO]\033[0m Skipping position [{chat_position}] - no chat name found")
+                    print(f"⏭️ Skipping position [{chat_position}] - no chat name found")
                     chat_position += 1
                     continue
                 
@@ -200,7 +197,7 @@ def find_next_chat_without_unread(driver, start_position=1):
                         ".//android.view.View[contains(@content-desc, 'unread message')]"
                     )
                     unread_check_time = time.time() - unread_check_start
-                    print(f"\033[91m[INFO]\033[0m Skipping {chat_name} - has unread messages (check took {unread_check_time:.2f}s)")
+                    print(f"⏭️ Skipping {chat_name} - has unread messages (check took {unread_check_time:.2f}s)")
                     chat_position += 1
                     continue
                 except:
@@ -227,198 +224,131 @@ def find_next_chat_without_unread(driver, start_position=1):
         print(f"❌ Error finding chats after {total_time:.2f}s: {str(e)}")
         return None, None, None, "ERROR"
 
-
-def process_whatsapp_chats_test(driver, send_message_callback=None, sleep_time=0.3, max_scroll_attempts=10):
+def get_chat_containers(driver, count=7):
     """
-    Test version: Process WhatsApp chats (ignoring unread messages) to test scrolling logic.
-    """
-    processed_chats = set()
-    max_chats_to_process = 5  # Limit for testing
+    Detects and validates chat containers, extracting titles for all available ones.
+    Uses fresh element lookup to avoid stale element references.
 
-    def scroll_last_chat_to_top(driver, chat_element, chat_title, title_location, title_center, duration=600):
-        """
-        Scrolls the last processed chat element to the top of the screen using W3C Actions.
-        driver: Appium WebDriver instance
-        chat_element: WebElement of the last chat
-        chat_title: Title text of the chat
-        title_location: dict with 'x', 'y' of the chat element
-        title_center: dict with 'x', 'y' of the element center
-        duration: swipe duration in milliseconds
-        """
-        try:
-            print(f"Scrolling '{chat_title}' to top...")
+    :param driver: Appium driver instance
+    :param count: number of chats to consider (default 7)
+    :return: list of dicts with chat index, title, and fresh lookup function
+    """
+    chat_data = []
+
+    # 1. Get all visible chat containers
+    chat_containers = driver.find_elements(
+        AppiumBy.XPATH,
+        "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container']"
+    )
+
+    if not chat_containers:
+        print("No chat containers found.")
+        return chat_data
+
+    print(f"Found {len(chat_containers)} actual chat containers")
+
+    # 2. Process each available chat container
+    for i in range(count):
+        if i < len(chat_containers):
+            # Real element exists
+            element = chat_containers[i]
+            is_valid = False
+            chat_title = "Unknown"
             
-            # Define start and end coordinates
-            start_x = title_center['x']
-            start_y = title_center['y']
-            # Target position for first chat (y=315)
-            target_y = 315
-            end_y = target_y
+            try:
+                # Validate element is visible and clickable
+                if element.is_displayed() and element.is_enabled():
+                    location = element.location
+                    size = element.size
+                    if location['x'] >= 0 and location['y'] >= 0 and size['width'] > 0 and size['height'] > 0:
+                        is_valid = True
+                        
+                        # Extract chat title/name
+                        try:
+                            chat_name_selectors = [
+                                (AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"),
+                                (AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'contact_name')]"),
+                                (AppiumBy.XPATH, ".//android.widget.TextView[@content-desc]")
+                            ]
+                            
+                            for selector_type, selector in chat_name_selectors:
+                                try:
+                                    chat_name_element = element.find_element(selector_type, selector)
+                                    chat_title = chat_name_element.text
+                                    break
+                                except:
+                                    continue
+                        except Exception as e:
+                            print(f"Could not extract chat title for chat {i}: {str(e)}")
+                        
+                        # Check for unread messages
+                        has_unread = False
+                        try:
+                            unread_element = element.find_element(
+                                AppiumBy.XPATH, 
+                                ".//android.view.View[contains(@content-desc, 'unread message')]"
+                            )
+                            has_unread = True
+                        except:
+                            has_unread = False
+                        
+                        if has_unread:
+                            print(f"Chat {i} => REAL element found: '{chat_title}' \033[93m(HAS UNREAD MESSAGES - SKIPPING)\033[0m")
+                        else:
+                            print(f"Chat {i} => REAL element found: '{chat_title}' \033[1;92m(NO UNREAD - OK TO TAP)\033[0m")
+                    else:
+                        print(f"Chat {i} => REAL element but not properly positioned")
+                else:
+                    print(f"Chat {i} => REAL element but not displayed/enabled")
+            except Exception as e:
+                print(f"Chat {i} => REAL element but validation failed: {str(e)}")
             
-            # Calculate distance and direction
-            distance_pixels = abs(start_y - end_y)
-            print(f"Scrolling from y={start_y} to y={end_y}, distance={distance_pixels}px")
-            
-            # Convert distance to screen percentage for mobile: scrollGesture
-            screen_height = driver.get_window_size()['height']
-            scroll_percent = min(int((distance_pixels / screen_height) * 100), 100)
-            print(f"Screen height: {screen_height}px, calculated scroll percent: {scroll_percent}%")
-            
-            # Use mobile: scrollGesture with calculated percentage
-            driver.execute_script("mobile: scrollGesture", {
-                "elementId": chat_element.id,
-                "direction": "down",
-                "percent": scroll_percent,  # Use calculated percentage based on actual distance
-                "speed": 100    # How fast (milliseconds)
+            # Add to chat data with fresh lookup function instead of cached element
+            if is_valid:
+                def create_fresh_lookup(index):
+                    def get_fresh_element():
+                        try:
+                            fresh_containers = driver.find_elements(
+                                AppiumBy.XPATH,
+                                "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container']"
+                            )
+                            if index < len(fresh_containers):
+                                return fresh_containers[index]
+                            return None
+                        except:
+                            return None
+                    return get_fresh_element
+                
+                chat_data.append({
+                    "index": i, 
+                    "element": None,  # Don't store cached element
+                    "title": chat_title,
+                    "get_fresh_element": create_fresh_lookup(i),
+                    "has_real_element": True,
+                    "has_unread": has_unread
+                })
+            else:
+                chat_data.append({
+                    "index": i, 
+                    "element": None, 
+                    "title": None,
+                    "get_fresh_element": None,
+                    "has_real_element": False,
+                    "has_unread": False
+                })
+        else:
+            # Simulated element (lazy loaded)
+            print(f"Chat {i} => SIMULATED (lazy load assumed)")
+            chat_data.append({
+                "index": i, 
+                "element": None, 
+                "title": None,
+                "get_fresh_element": None,
+                "has_real_element": False,
+                "has_unread": False
             })
-            print(f"Scroll of '{chat_title}' completed using mobile: scrollGesture.")
-            
-            # Verify if the chat moved to top position
-            try:
-                time.sleep(0.5)  # Wait for scroll to settle
-                top_chat_name = driver.find_element(
-                    AppiumBy.XPATH, "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container'][1]//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
-                ).text
-                
-                if top_chat_name == chat_title:
-                    print(f"✅ '{chat_title}' successfully moved to top position")
-                    return True
-                else:
-                    print(f"⚠️ Top chat is now '{top_chat_name}', not '{chat_title}'")
-                    return False
-            except Exception as e:
-                print(f"❌ Error verifying top chat: {e}")
-                return False
-                
-        except Exception as e:
-            print(f"Error scrolling '{chat_title}' to top: {e}")
-            return False
 
-    while len(processed_chats) < max_chats_to_process:
-        # 1. Get currently visible chats (re-find each time to avoid stale elements)
-        try:
-            chat_containers = driver.find_elements(
-                AppiumBy.XPATH, "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container']"
-            )
-        except Exception as e:
-            print(f"Error finding chat containers: {e}")
-            break
-
-        if not chat_containers:
-            print("No chats found, breaking")
-            break
-
-        print(f"Found {len(chat_containers)} chats on current view")
-        last_chat_name_for_scroll = None
-        processed_in_this_round = 0
-
-        # 2. Iterate through visible chats
-        for i, chat in enumerate(chat_containers):
-            try:
-                chat_name_element = chat.find_element(
-                    AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
-                )
-                chat_name = chat_name_element.text
-            except Exception:
-                continue
-                
-            if chat_name in processed_chats:
-                print(f"Already processed: {chat_name}")
-                continue
-
-            # Skip chats with unread messages
-            try:
-                chat.find_element(
-                    AppiumBy.XPATH, ".//android.view.View[contains(@content-desc, 'unread message')]"
-                )
-                print(f"\033[91m[INFO]\033[0m Skipping {chat_name} - has unread messages")
-                continue
-            except NoSuchElementException:
-                pass
-
-            print(f"Processing chat: {chat_name}")
-            try:
-                chat.click()
-                if send_message_callback:
-                    # Create a mock element with the chat name to avoid stale element issues
-                    class MockChat:
-                        def __init__(self, name):
-                            self._name = name
-                        def get_attribute(self, attr):
-                            return self._name
-                    send_message_callback(MockChat(chat_name))
-                driver.back()
-                time.sleep(0.5)  # Wait for list to stabilize
-                
-                processed_chats.add(chat_name)
-                last_chat_name_for_scroll = chat_name  # Store name, not element
-                processed_in_this_round += 1
-                
-                if len(processed_chats) >= max_chats_to_process:
-                    break
-            except Exception as e:
-                print(f"Error processing chat {chat_name}: {e}")
-                continue
-
-        if processed_in_this_round == 0:
-            print("No new chats processed, breaking")
-            break
-
-        # 3. Use scroll_last_chat_to_top function instead of generic scroll
-        if last_chat_name_for_scroll:
-            print(f"Scrolling after processing. Last chat was: {last_chat_name_for_scroll}")
-            
-            # Find the last processed chat element and use scroll_last_chat_to_top
-            try:
-                # Try to find the last processed chat by name
-                last_chat_element = None
-                current_chats = driver.find_elements(
-                    AppiumBy.XPATH, "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container']"
-                )
-                
-                for chat in current_chats:
-                    try:
-                        chat_name_element = chat.find_element(
-                            AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
-                        )
-                        if chat_name_element.text == last_chat_name_for_scroll:
-                            last_chat_element = chat
-                            break
-                    except:
-                        continue
-                
-                if last_chat_element:
-                    # Extract chat title and coordinates
-                    try:
-                        chat_title_element = last_chat_element.find_element(
-                            AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
-                        )
-                        chat_title = chat_title_element.text
-                        title_location = chat_title_element.location
-                        title_size = chat_title_element.size
-                        title_center = {
-                            'x': title_location['x'] + title_size['width']//2,
-                            'y': title_location['y'] + title_size['height']//2
-                        }
-                        
-                        print(f"Found last processed chat element:")
-                        print(f"  - Chat Title: '{chat_title}'")
-                        print(f"  - Title Location: {title_location}")
-                        print(f"  - Title Size: {title_size}")
-                        print(f"  - Title Center: x={title_center['x']}, y={title_center['y']}")
-                        
-                        # Call scroll_last_chat_to_top with the element
-                        scroll_last_chat_to_top(driver, last_chat_element, chat_title, title_location, title_center)
-                    except Exception as e:
-                        print(f"Error extracting chat title/coordinates: {e}")
-                        print(f"Stopping - cannot extract chat info")
-                        break
-                else:
-                    print("Could not find last processed chat element, stopping")
-                    break
-            except Exception as e:
-                print(f"Error in scroll_last_chat_to_top: {e}, stopping")
-                break
+    return chat_data
 
 
 def send_message_callback(chat_element):
@@ -434,9 +364,9 @@ def send_message_callback(chat_element):
     except:
         chat_name = "Unknown"
     
-    print(f"\033[1;93m[INFO]\033[0m Processing chat: {chat_name}")
+    print(f"🎯 Processing chat: {chat_name}")
     time.sleep(2)
-    print(f"\033[1;92m[Approved]\033[0m Successfully processed chat: {chat_name}")
+    print(f"✅ Successfully processed chat: {chat_name}")
 
 def test_chat_search():
     """Main test function to test chat search functionality with scrolling"""
@@ -448,25 +378,14 @@ def test_chat_search():
         
         print("🔧 Setting up Appium driver...")
         driver = setup_driver()
+ 
         
-        # Turn on screen and unlock
-        if not turn_screen_on_and_unlock(driver):
-            print("❌ Failed to unlock device")
-            return
-        
-        # Launch WhatsApp Business
-        if not open_whatsapp_business(driver):
-            print("❌ Failed to launch WhatsApp Business")
-            return
-        
-        # Add initial setup from main WhatsApp script
-        print("WhatsApp Business is now open and ready for use!")
-        time.sleep(1.8)
+       
         
         # Scroll up to ensure filter buttons are visible
         try:
             print("Scrolling up to reveal filter buttons...")
-            driver.swipe(540, 300, 540, 600, 200)  # Swipe from middle-top to middle-bottom
+            driver.swipe(540, 300, 540, 600, 200)  # Swipe from top to bottom (scrolls content up)
             time.sleep(0.1)
             print("Scroll up completed")
         except Exception as e:
@@ -488,11 +407,98 @@ def test_chat_search():
         print("🔍 STARTING WHATSAPP CHAT PROCESSING WITH NEW SCROLLING LOGIC")
         print("="*50)
         
-        try:
-            process_whatsapp_chats_test(driver, send_message_callback)
-            print(f"\n✅ Chat processing COMPLETED!")
-        except Exception as e:
-            print(f"\n❌ Error during chat processing: {str(e)}")
+        chats = get_chat_containers(driver)
+
+        def process_chat_callback(chat_data):
+            """Callback function for processing each chat - INSERT YOUR LOGIC HERE"""
+            print(f"📝 Processing chat {chat_data['index']}: '{chat_data['title']}'")
+            # TODO: Insert your custom logic here
+            time.sleep(1)  # Placeholder for your processing
+            print(f"✅ Finished processing chat {chat_data['index']}")
+
+        def scroll_last_chat_to_top(last_chat, max_scroll_attempts=10, sleep_time=0.3):
+            """
+            Scroll until the last_chat becomes the first visible chat using screen swipe.
+            Returns True if successful, False if max attempts reached.
+            """
+            try:
+                # Try to get the chat name, but handle stale element
+                last_chat_name = last_chat.find_element(
+                    AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
+                ).text
+                print(f"Scrolling until '{last_chat_name}' becomes first visible")
+            except:
+                print("Could not get last chat name (stale element), using generic scroll")
+                last_chat_name = None
+
+            attempts = 0
+            while attempts < max_scroll_attempts:
+                # If we don't have the last chat name, just scroll a few times
+                if last_chat_name is None:
+                    print(f"Generic scroll attempt {attempts + 1}")
+                    # Just scroll a reasonable amount
+                    if attempts >= 3:  # Only do 3 generic scrolls
+                        return True
+                else:
+                    try:
+                        top_chat_name = driver.find_element(
+                            AppiumBy.XPATH, "//android.widget.LinearLayout[@resource-id='com.whatsapp.w4b:id/contact_row_container'][1]//android.widget.TextView[contains(@resource-id, 'conversations_row_contact_name')]"
+                        ).text
+                    except:
+                        print("Could not get top chat name")
+                        break
+
+                    if top_chat_name == last_chat_name:
+                        print(f"✅ '{last_chat_name}' is now the top chat")
+                        return True
+
+                # Swipe up using screen coordinates
+                size = driver.get_window_size()
+                start_x = size['width'] // 2
+                start_y = int(size['height'] * 0.8)
+                end_y = int(size['height'] * 0.2)
+                driver.swipe(start_x, start_y, start_x, end_y, duration=500)
+
+                time.sleep(sleep_time)
+                attempts += 1
+                print(f"Scrolling... attempt {attempts}")
+
+            print("❌ Max scroll attempts reached")
+            return False
+
+        processed_count = 0
+        last_processed_chat = None
+        
+        for chat in chats:
+            if chat["has_real_element"] and not chat["has_unread"]:
+                # Get fresh element to avoid stale reference
+                fresh_element = chat["get_fresh_element"]()
+                if fresh_element:
+                    print(f"🔄 Clicking chat {chat['index']}: '{chat['title']}'")
+                    fresh_element.click()
+                    time.sleep(0.5)  # Brief pause after click
+                    
+                    # Call the callback function for processing
+                    process_chat_callback(chat)
+                    
+                    # Go back to main chat list
+                    print(f"🔙 Going back to chat list from chat {chat['index']}")
+                    driver.back()
+                    time.sleep(0.5)  # Wait for chat list to load
+                    
+                    processed_count += 1
+                    last_processed_chat = fresh_element
+                    print(f"📊 Processed {processed_count} chats so far")
+                else:
+                    print(f"Chat {chat['index']} => Could not get fresh element")
+        
+        # Scroll to reveal more chats if we processed any
+        if last_processed_chat and processed_count > 0:
+            print(f"\n🔄 Scrolling to reveal more chats after processing {processed_count} chats...")
+            scroll_last_chat_to_top(last_processed_chat)
+        
+        print(f"\n📈 Total chats processed: {processed_count}")
+            # No need to print anything else - status already printed in get_chat_containers()
         
         print("\n" + "="*50)
         print("🏁 TEST COMPLETE")
