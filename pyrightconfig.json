@@ -1,0 +1,17 @@
+{
+    "include": [
+        "."
+    ],
+    "exclude": [
+        "**/__pycache__"
+    ],
+    "pythonVersion": "3.13",
+    "pythonPlatform": "Windows",
+    "reportMissingImports": false,
+    "reportMissingModuleSource": false,
+    "reportAttributeAccessIssue": false,
+    "stubPath": "",
+    "venvPath": "",
+    "reportUnusedVariable": "none",
+    "reportUnusedImport": "none"
+}
