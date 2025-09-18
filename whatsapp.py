@@ -63,6 +63,7 @@ def log_not_found_chat(chat_name, row_number=None):
     except Exception as e:
         print(f"[ERROR] Failed to log not found chat: {str(e)}")
 
+
 def log_script_event(event_type, message=""):
     """Log script start/end events with GMT+7 timestamp"""
     try:
@@ -165,7 +166,7 @@ def turn_screen_on_and_unlock(driver):
         
         # First, ensure screen is awake using wake key
         driver.press_keycode(224)  # KEYCODE_WAKEUP (safer than power toggle)
-        time.sleep(1)
+        time.sleep(.5)
         
         # Verify screen is responsive
         screen_size = driver.get_window_size()
@@ -191,7 +192,7 @@ def open_whatsapp_business(driver):
         
         # Method 1: Use activate_app first (most reliable and fastest)
         driver.activate_app("com.whatsapp")
-        time.sleep(1.5)  # Reduced wait time
+        time.sleep(.5)  # Reduced wait time
         print("WhatsApp opened using activate_app!")
         return True
             
@@ -220,7 +221,7 @@ def open_whatsapp_business(driver):
                     try:
                         whatsapp_element = driver.find_element(AppiumBy.XPATH, f"//android.widget.TextView[@text='{text}']")
                         whatsapp_element.click()
-                        time.sleep(1.5)
+                        time.sleep(.5)
                         print(f"WhatsApp Business opened by clicking '{text}' icon!")
                         return True
                     except:
@@ -620,7 +621,7 @@ def send_message_with_photo(driver, message):
         step_start = time.time()
         try:
             # Wait for photo preview to load
-            time.sleep(1.5)
+            time.sleep(0.5)
 
             # Tap on caption area at bottom of screen
             screen_size = driver.get_window_size()
@@ -629,7 +630,7 @@ def send_message_with_photo(driver, message):
 
             print(f"[DEBUG] Tapping caption area at: ({caption_x}, {caption_y})")
             driver.tap([(caption_x, caption_y)])
-            time.sleep(1)  # Wait for keyboard to appear
+            time.sleep(.5)  # Wait for keyboard to appear
             print(f"[INFO] Caption area tapped ({time.time() - step_start:.2f}s)")
 
         except Exception as e:
@@ -669,7 +670,7 @@ def send_message_with_photo(driver, message):
             click_time = time.time() - click_start
             print(f"[DEBUG] Send button tapped in {click_time:.2f}s")
 
-            time.sleep(0.8)  # Wait for message to send
+            time.sleep(0.5)  # Wait for message to send
             print(f"[INFO] Sent ({time.time() - step_start:.2f}s)")
 
         except Exception as send_error:
@@ -843,7 +844,7 @@ def search_and_find_chat(driver, chat_name):
         if search_button:
             # Click on search button
             search_button.click()
-            time.sleep(1.5)
+            time.sleep(.5)
             print("[DEBUG] Search activated successfully")
         else:
             print("[DEBUG] Search button not found, trying alternative methods...")
@@ -934,7 +935,7 @@ def search_and_find_chat(driver, chat_name):
 
         # Wait specifically for either "No results" OR chat under "Chats" section
         print(f"[WAIT] Waiting for either 'No results' or chat under 'Chats' section...")
-
+        time.sleep(.7)
         max_wait_time = 20  # Maximum wait time in seconds
         wait_start = time.time()
         last_message_time = 0  # Track when we last showed a wait message
@@ -1000,7 +1001,11 @@ def search_and_find_chat(driver, chat_name):
                             except:
                                 continue
 
-                        print(f"[DEBUG] 'Chats' section exists but no matching chat found yet - continuing to wait...")
+                        print(f"[NOT FOUND] 'Chats' section exists but no matching chat found - proceeding to next chat...")
+                        # Go back to main screen
+                        driver.press_keycode(4)  # Back button
+                        time.sleep(0.5)
+                        return False
                     else:
                         print(f"[DEBUG] 'Chats' section not visible yet - continuing to wait...")
 
@@ -1008,7 +1013,7 @@ def search_and_find_chat(driver, chat_name):
                     pass  # Silently continue checking
 
                 # Wait before next check
-                time.sleep(0.8)
+                time.sleep(0.5)
                 elapsed_time = time.time() - wait_start
 
                 # Only show wait message every 3 seconds to reduce spam
