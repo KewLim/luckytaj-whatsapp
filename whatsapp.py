@@ -929,6 +929,8 @@ def search_and_find_chat(driver, chat_name):
             return False
 
         # Clear and enter chat name
+        search_input.click()           # Ensure field is focused
+        time.sleep(0.5)               # Brief pause for keyboard
         search_input.clear()
         search_input.send_keys(chat_name)
         # print(f"Entered search term: {chat_name}")
