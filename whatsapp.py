@@ -19,12 +19,16 @@ GMT_PLUS_7 = timezone(timedelta(hours=7))
 CHAT_NAME_PREFIX_TO_REMOVE = "NepalWin🇳🇵"  # Change this to customize what prefix to remove
 
 def clean_chat_name(chat_name):
-    """Remove configured prefix from chat name for searching"""
+    """Remove configured prefix from chat name for searching and handle various formats"""
+    # Handle names that already have the prefix removed or never had it
     if CHAT_NAME_PREFIX_TO_REMOVE and chat_name.startswith(CHAT_NAME_PREFIX_TO_REMOVE):
         cleaned_name = chat_name.replace(CHAT_NAME_PREFIX_TO_REMOVE, "", 1).strip()
         print(f"[CLEAN] Cleaned '{chat_name}' -> '{cleaned_name}'")
         return cleaned_name
-    return chat_name
+    else:
+        # For names that don't have the prefix (like "Shankartr88"), use them as-is
+        print(f"[CLEAN] Using name as-is: '{chat_name}'")
+        return chat_name.strip()
 
 def get_gmt7_time():
     """Get current time in GMT+7 timezone"""
@@ -267,12 +271,36 @@ def analyze_chat_entries():
             line = line.strip()
             # Skip empty lines and comments
             if line and not line.startswith('#'):
-                all_entries.append((line_num, line))
+                # Parse formatted entries like "  - Row 982: NepalWin🇳🇵Shankartr88"
+                chat_name = line
+                original_row = line_num
+
+                # Check if line has the "- Row X:" format
+                if "- Row" in line and ":" in line:
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        # Extract row number from "- Row 982" part
+                        row_part = parts[0].strip()
+                        if "Row" in row_part:
+                            try:
+                                row_number = int(row_part.split("Row")[1].strip())
+                                original_row = row_number
+                            except:
+                                pass  # Keep original line_num if parsing fails
+
+                        # Extract chat name from the part after ":"
+                        chat_name = parts[1].strip()
+
+                # Skip if chat name is empty after parsing
+                if not chat_name:
+                    continue
+
+                all_entries.append((original_row, chat_name))
                 total_entries += 1
 
                 # Check if it's a phone number (contains only digits and +)
-                # Simple check: if it starts with numbers or contains only digits/+/spaces
-                if line.replace('+', '').replace(' ', '').replace('-', '').isdigit():
+                clean_for_check = chat_name.replace('NepalWin🇳🇵', '').replace('+', '').replace(' ', '').replace('-', '')
+                if clean_for_check.isdigit():
                     phone_numbers += 1
                 else:
                     groups += 1
@@ -580,14 +608,14 @@ def send_message_with_photo(driver, message):
             raise Exception("Gallery button not found")
             
         gallery_btn.click()
-        time.sleep(1.2)  # Reduced from 3s
+        time.sleep(1)  # Reduced from 3s
         print(f"[INFO] Gallery opened ({time.time() - step_start:.2f}s)")
         
         # Step 3: Select first photo with proper element verification
         step_start = time.time()
         try:
             # Wait for gallery to fully load
-            time.sleep(2)
+            time.sleep(.5)
 
             # Use simple tap on first photo position - more reliable than element selection
             screen_size = driver.get_window_size()
@@ -601,7 +629,7 @@ def send_message_with_photo(driver, message):
 
             # Use simple tap instead of W3C actions
             driver.tap([(photo_x, photo_y)])
-            time.sleep(1.5)  # Wait for photo to be selected
+            time.sleep(.7)  # Wait for photo to be selected
             print(f"[INFO] Photo selected via tap ({time.time() - step_start:.2f}s)")
 
         except Exception as e:
@@ -611,7 +639,7 @@ def send_message_with_photo(driver, message):
                 photo_x = 180  # Fixed position that usually works
                 photo_y = 400
                 driver.tap([(photo_x, photo_y)])
-                time.sleep(1.5)
+                time.sleep(.7)
                 print(f"[INFO] Photo selected via fallback tap ({time.time() - step_start:.2f}s)")
             except Exception as e2:
                 print(f"[ERROR] All photo selection methods failed: {e2}")
@@ -638,7 +666,7 @@ def send_message_with_photo(driver, message):
             # Try alternative caption position
             try:
                 driver.tap([(360, 1400)])  # Alternative fixed position
-                time.sleep(1)
+                time.sleep(.5)
                 print(f"[INFO] Caption area tapped via fallback")
             except:
                 print(f"[WARNING] Caption area not accessible, will send without caption")  
@@ -670,7 +698,7 @@ def send_message_with_photo(driver, message):
             click_time = time.time() - click_start
             print(f"[DEBUG] Send button tapped in {click_time:.2f}s")
 
-            time.sleep(0.5)  # Wait for message to send
+            time.sleep(0.1)  # Wait for message to send
             print(f"[INFO] Sent ({time.time() - step_start:.2f}s)")
 
         except Exception as send_error:
@@ -935,8 +963,8 @@ def search_and_find_chat(driver, chat_name):
         search_input.send_keys(chat_name)
         # print(f"Entered search term: {chat_name}")
 
-        # Wait specifically for either "No results" OR chat under "Chats" section
-        print(f"[WAIT] Waiting for either 'No results' or chat under 'Chats' section...")
+        # Wait specifically for either standalone "No results" (truly unavailable) OR chat under "Chats" section
+        print(f"[WAIT] Waiting for chat under 'Chats' section or standalone 'No results'...")
         time.sleep(.7)
         max_wait_time = 20  # Maximum wait time in seconds
         wait_start = time.time()
@@ -944,35 +972,14 @@ def search_and_find_chat(driver, chat_name):
 
         while (time.time() - wait_start) < max_wait_time:
             try:
-                # Check #1: Look for "No results found" message
-                no_results_selectors = [
-                    (AppiumBy.XPATH, "//*[@text='No results found']"),
-                    (AppiumBy.XPATH, "//*[contains(@text, 'No results found')]"),
-                    (AppiumBy.XPATH, "//*[contains(@text, 'No results')]"),
-                    (AppiumBy.XPATH, "//*[@text='No results']"),
-                    (AppiumBy.XPATH, "//*[contains(@text, 'not found')]"),
-                    (AppiumBy.XPATH, "//*[contains(@text, 'No chats found')]")
-                ]
-
-                # First priority: Check for "No results"
-                for selector in no_results_selectors:
-                    try:
-                        no_result_element = driver.find_element(*selector)
-                        if no_result_element.is_displayed():
-                            search_time = time.time() - search_start
-                            print(f"[\033[91mCONFIRMED\033[0m] 'No results found' displayed for '{chat_name}' after {search_time:.2f}s")
-                            # Go back to main screen before returning
-                            driver.press_keycode(4)  # Back button
-                            time.sleep(0.5)
-                            return False
-                    except:
-                        continue
-
-                # Check #2: Look for "Chats" section and chat under it
+                # Check #1: PRIORITY - Look for "Chats" section and chat under it FIRST
                 try:
                     chats_title = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[@resource-id='com.whatsapp:id/title' and @text='Chats']")
                     if chats_title.is_displayed():
                         print(f"[FOUND] 'Chats' section located - checking for chat underneath...")
+
+                        # Get the position of the "Chats" section to ensure we look below it
+                        chats_location = chats_title.location
 
                         # Look for chat containers under "Chats" section
                         chat_container_selectors = [
@@ -983,36 +990,117 @@ def search_and_find_chat(driver, chat_name):
 
                         for selector in chat_container_selectors:
                             try:
-                                chat_container = driver.find_element(*selector)
-                                if chat_container.is_displayed():
-                                    # Validate: Check if this container contains the searched chat name
-                                    try:
-                                        chat_name_in_container = chat_container.find_element(AppiumBy.XPATH, f".//*[contains(@text, '{chat_name}')]")
-                                        if chat_name_in_container.is_displayed():
-                                            search_time = time.time() - search_start
-                                            print(f"[\033[92mSUCCESS\033[0m] Chat '{chat_name}' found under 'Chats' section after {search_time:.2f}s")
-                                            # Click on the verified chat container
-                                            chat_container.click()
-                                            print(f"[CLICKED] Opened chat '{chat_name}'")
-                                            return True
-                                        else:
-                                            print(f"[DEBUG] Chat container found but doesn't contain '{chat_name}' - continuing search...")
-                                    except:
-                                        print(f"[DEBUG] Chat container found but can't verify content - continuing search...")
-                                        continue
+                                chat_containers = driver.find_elements(*selector)
+                                for chat_container in chat_containers:
+                                    if chat_container.is_displayed():
+                                        # Ensure the chat container is below the "Chats" section
+                                        container_location = chat_container.location
+                                        if container_location['y'] > chats_location['y']:
+                                            # Check if this container contains EITHER the searched chat name OR "You were added"
+                                            try:
+                                                # First, try to find the exact chat name
+                                                chat_name_in_container = chat_container.find_element(AppiumBy.XPATH, f".//*[contains(@text, '{chat_name}')]")
+                                                if chat_name_in_container.is_displayed():
+                                                    search_time = time.time() - search_start
+                                                    print(f"[\033[92mSUCCESS\033[0m] Chat '{chat_name}' found under 'Chats' section after {search_time:.2f}s")
+                                                    # Click on the verified chat container
+                                                    chat_container.click()
+                                                    print(f"[CLICKED] Opened chat '{chat_name}'")
+                                                    return True
+                                            except:
+                                                # If exact chat name not found, check for "You were added"
+                                                try:
+                                                    you_were_added_element = chat_container.find_element(AppiumBy.XPATH, ".//*[contains(@text, 'You were added')]")
+                                                    if you_were_added_element.is_displayed():
+                                                        search_time = time.time() - search_start
+                                                        print(f"[\033[92mSUCCESS\033[0m] Chat with 'You were added' found for '{chat_name}' under 'Chats' section after {search_time:.2f}s")
+                                                        # Click on the chat container with "You were added"
+                                                        chat_container.click()
+                                                        print(f"[CLICKED] Opened chat with 'You were added' for '{chat_name}'")
+                                                        return True
+                                                except:
+                                                    # Finally, try partial match of chat name
+                                                    try:
+                                                        text_elements = chat_container.find_elements(AppiumBy.XPATH, ".//*[@class='android.widget.TextView']")
+                                                        for text_elem in text_elements:
+                                                            if text_elem.is_displayed():
+                                                                text_content = text_elem.text.lower()
+                                                                if chat_name.lower() in text_content:
+                                                                    search_time = time.time() - search_start
+                                                                    print(f"[\033[92mSUCCESS\033[0m] Chat '{chat_name}' found under 'Chats' section (partial match) after {search_time:.2f}s")
+                                                                    chat_container.click()
+                                                                    print(f"[CLICKED] Opened chat '{chat_name}'")
+                                                                    return True
+                                                    except:
+                                                        continue
                             except:
                                 continue
 
-                        print(f"[NOT FOUND] 'Chats' section exists but no matching chat found - proceeding to next chat...")
-                        # Go back to main screen
-                        driver.press_keycode(4)  # Back button
-                        time.sleep(0.5)
-                        return False
-                    else:
-                        print(f"[DEBUG] 'Chats' section not visible yet - continuing to wait...")
+                        # If "Chats" section exists but no matching chat found, wait a bit more
+                        current_wait_time = time.time() - wait_start
+                        if current_wait_time < (max_wait_time * 0.75):  # Give 75% of total wait time
+                            print(f"[WAIT] 'Chats' section exists but no matching chat yet - continuing to wait...")
+                            time.sleep(0.5)
+                            continue
+                        else:
+                            print(f"[NOT FOUND] 'Chats' section exists but no matching chat found after extended wait")
+                            # Don't return False yet, check for standalone "No results" first
 
                 except:
-                    pass  # Silently continue checking
+                    pass  # Continue to check for "No results"
+
+                # Check #2: Look for standalone "No results" (ONLY when no sections exist)
+                try:
+                    # Check if BOTH "Messages" and "Chats" sections are absent
+                    message_section_exists = False
+                    chats_section_exists = False
+
+                    try:
+                        message_section = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[@resource-id='com.whatsapp:id/title' and @text='Messages']")
+                        if message_section.is_displayed():
+                            message_section_exists = True
+                            print(f"[DEBUG] 'Messages' section exists - 'No results' under it doesn't mean unavailable")
+                    except:
+                        pass
+
+                    try:
+                        chats_section = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[@resource-id='com.whatsapp:id/title' and @text='Chats']")
+                        if chats_section.is_displayed():
+                            chats_section_exists = True
+                            print(f"[DEBUG] 'Chats' section exists - still checking for chats")
+                    except:
+                        pass
+
+                    # Only consider "No results" as truly unavailable when NO sections exist
+                    if not message_section_exists and not chats_section_exists:
+                        no_results_selectors = [
+                            (AppiumBy.XPATH, "//*[@text='No results found']"),
+                            (AppiumBy.XPATH, "//*[contains(@text, 'No results found')]"),
+                            (AppiumBy.XPATH, "//*[contains(@text, 'No results')]"),
+                            (AppiumBy.XPATH, "//*[@text='No results']")
+                        ]
+
+                        for selector in no_results_selectors:
+                            try:
+                                no_result_element = driver.find_element(*selector)
+                                if no_result_element.is_displayed():
+                                    search_time = time.time() - search_start
+                                    print(f"[\033[91mCONFIRMED\033[0m] Standalone 'No results found' - chat '{chat_name}' truly unavailable after {search_time:.2f}s")
+                                    # Go back to main screen before returning
+                                    driver.press_keycode(4)  # Back button
+                                    time.sleep(0.5)
+                                    return False
+                            except:
+                                continue
+                    else:
+                        if message_section_exists:
+                            print(f"[DEBUG] 'Messages' section exists - ignoring any 'No results' under it")
+                        if chats_section_exists:
+                            print(f"[DEBUG] 'Chats' section exists - continuing to wait for chat")
+
+                except:
+                    pass
+
 
                 # Wait before next check
                 time.sleep(0.5)

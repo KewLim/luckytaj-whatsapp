@@ -40,7 +40,8 @@
       "Bash(./test_env_vars.bat)",
       "Bash(\"C:/Users/BDC Computer ll/AppData/Local/Programs/Python/Python313/python.exe\" -m pip install Appium-Python-Client)",
       "Bash(git config:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"
