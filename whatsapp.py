@@ -109,7 +109,7 @@ def setup_driver():
     options.device_name = "Android Device"
     options.automation_name = "UiAutomator2"
     options.app_package = "com.whatsapp"
-    options.app_activity = "com.whatsapp.HomeActivity"
+    options.app_activity = "com.whatsapp.home.ui.HomeActivity"
     options.no_reset = True
     options.full_reset = False
 
@@ -130,37 +130,103 @@ def is_driver_alive(driver):
     except Exception:
         return False
 
-def recover_session(driver):
-    """Attempt to recover the Appium session"""
-    try:
-        print("[RECOVERY] Attempting to recover Appium session...")
-
-        # Try to quit the old session gracefully
+def recover_session(driver, max_attempts=3):
+    """Attempt to recover the Appium session with multiple strategies"""
+    for attempt in range(max_attempts):
         try:
-            driver.quit()
-        except:
-            pass
+            print(f"[RECOVERY] Attempting to recover Appium session... (Attempt {attempt + 1}/{max_attempts})")
 
-        # Create new session
-        new_driver = setup_driver()
+            # Strategy 1: Try to gracefully quit the old session
+            if driver:
+                try:
+                    print("[RECOVERY] Attempting graceful session cleanup...")
+                    driver.quit()
+                    print("[RECOVERY] Old session cleaned up")
+                except Exception as quit_error:
+                    print(f"[RECOVERY] Session cleanup failed: {quit_error}")
 
-        # Re-initialize WhatsApp
-        print("[RECOVERY] Re-opening WhatsApp...")
-        turn_screen_on_and_unlock(new_driver)
-        time.sleep(2)
+            # Strategy 2: Wait a bit for resources to be released
+            time.sleep(2 + attempt)  # Progressive delay
 
-        whatsapp_success = open_whatsapp_business(new_driver)
-        if whatsapp_success:
-            print("[RECOVERY] Session recovered successfully!")
-            time.sleep(2)  # Give app time to load
-            return new_driver
-        else:
-            print("[RECOVERY] Failed to re-open WhatsApp")
-            return None
+            # Strategy 3: Create new session with enhanced error handling
+            try:
+                print("[RECOVERY] Creating new Appium session...")
+                new_driver = setup_driver()
+                print("[RECOVERY] New session created successfully")
+            except Exception as setup_error:
+                print(f"[RECOVERY] Failed to create new session: {setup_error}")
+                if attempt < max_attempts - 1:
+                    print(f"[RECOVERY] Retrying in {3 + attempt} seconds...")
+                    time.sleep(3 + attempt)
+                    continue
+                else:
+                    return None
 
-    except Exception as e:
-        print(f"[RECOVERY] Session recovery failed: {str(e)}")
-        return None
+            # Strategy 4: Re-initialize device and WhatsApp
+            print("[RECOVERY] Re-initializing device and WhatsApp...")
+
+            # Turn on screen and unlock
+            unlock_success = turn_screen_on_and_unlock(new_driver)
+            if not unlock_success:
+                print("[RECOVERY] Failed to unlock device")
+                if attempt < max_attempts - 1:
+                    try:
+                        new_driver.quit()
+                    except:
+                        pass
+                    continue
+                else:
+                    return None
+
+            # Brief pause for device to stabilize
+            adaptive_wait(new_driver, 1.5, 3.0)
+
+            # Open WhatsApp with improved detection
+            whatsapp_success = open_whatsapp_business(new_driver)
+            if whatsapp_success:
+                print("[RECOVERY] Session recovered successfully!")
+                return new_driver
+            else:
+                print("[RECOVERY] Failed to re-open WhatsApp")
+                if attempt < max_attempts - 1:
+                    try:
+                        new_driver.quit()
+                    except:
+                        pass
+                    continue
+                else:
+                    return None
+
+        except Exception as e:
+            print(f"[RECOVERY] Recovery attempt {attempt + 1} failed: {str(e)}")
+            if attempt < max_attempts - 1:
+                print(f"[RECOVERY] Retrying recovery in {3 + attempt} seconds...")
+                time.sleep(3 + attempt)
+            else:
+                print("[RECOVERY] All recovery attempts failed")
+                return None
+
+    return None
+
+def safe_operation(operation, *args, retry_count=2, **kwargs):
+    """Wrapper for safe execution of operations with auto-retry and recovery"""
+    for attempt in range(retry_count + 1):
+        try:
+            return operation(*args, **kwargs)
+        except Exception as e:
+            print(f"[SAFE_OP] Operation '{operation.__name__}' failed (attempt {attempt + 1}): {e}")
+
+            # Check if it's a driver-related error that needs recovery
+            driver_errors = ["session", "connection", "socket", "timeout", "network"]
+            if any(error_term in str(e).lower() for error_term in driver_errors):
+                print(f"[SAFE_OP] Detected driver-related error, may need session recovery")
+
+            if attempt < retry_count:
+                print(f"[SAFE_OP] Retrying operation in {1 + attempt} seconds...")
+                time.sleep(1 + attempt)
+            else:
+                print(f"[SAFE_OP] Operation '{operation.__name__}' failed after {retry_count + 1} attempts")
+                raise e
 
 
 def turn_screen_on_and_unlock(driver):
@@ -189,55 +255,143 @@ def turn_screen_on_and_unlock(driver):
 
 
 
-def open_whatsapp_business(driver):
-    """Open WhatsApp Business application - optimized for speed"""
+def wait_for_whatsapp_loaded(driver, timeout=15):
+    """Wait for WhatsApp to be fully loaded with proper backend checks"""
+    print("[LOAD] Waiting for WhatsApp to fully load...")
+    wait = WebDriverWait(driver, timeout)
+
     try:
-        print("Opening WhatsApp...")
-        
-        # Method 1: Use activate_app first (most reliable and fastest)
-        driver.activate_app("com.whatsapp")
-        time.sleep(.5)  # Reduced wait time
-        print("WhatsApp opened using activate_app!")
-        return True
-            
+        # Wait for main WhatsApp elements to be present and stable
+        main_indicators = [
+            # Main chat list indicators
+            (AppiumBy.XPATH, "//*[@text='WhatsApp']"),
+            (AppiumBy.XPATH, "//*[@text='Chats']"),
+            (AppiumBy.ID, "com.whatsapp:id/menuitem_search"),
+            (AppiumBy.ID, "com.whatsapp:id/search"),
+            # Floating action button (new chat)
+            (AppiumBy.ID, "com.whatsapp:id/fab"),
+        ]
+
+        # Wait for at least one main indicator to be present
+        element_found = False
+        for selector_type, selector in main_indicators:
+            try:
+                element = wait.until(EC.presence_of_element_located((selector_type, selector)))
+                if element.is_displayed():
+                    print(f"[LOAD] Found main element: {selector}")
+                    element_found = True
+                    break
+            except TimeoutException:
+                continue
+
+        if not element_found:
+            print("[LOAD] No main WhatsApp elements found")
+            return False
+
+        # Additional stability check - wait a bit more for backend to settle
+        print("[LOAD] Main elements found, waiting for backend stability...")
+        time.sleep(2.5)  # Allow backend processes to complete
+
+        # Verify app is still responsive
+        try:
+            driver.get_window_size()  # Simple responsiveness test
+            print("[LOAD] WhatsApp is fully loaded and responsive")
+            return True
+        except:
+            print("[LOAD] App became unresponsive")
+            return False
+
     except Exception as e:
-        print(f"Failed to open WhatsApp Business with activate_app: {str(e)}")
-        
+        print(f"[LOAD] Error waiting for WhatsApp: {e}")
+        return False
+
+def open_whatsapp_business(driver):
+    """Open WhatsApp application with improved reliability and loading detection"""
+    max_attempts = 3
+
+    for attempt in range(max_attempts):
+        print(f"Opening WhatsApp... (Attempt {attempt + 1}/{max_attempts})")
+
+        try:
+            # Method 1: Use activate_app first (most reliable)
+            print("[OPEN] Trying activate_app method...")
+            driver.activate_app("com.whatsapp")
+            time.sleep(1)  # Brief wait for app launch
+
+            # Check if app actually opened
+            if wait_for_whatsapp_loaded(driver):
+                print("[SUCCESS] WhatsApp opened using activate_app!")
+                return True
+            else:
+                print("[FAIL] activate_app launched but app not properly loaded")
+
+        except Exception as e:
+            print(f"[FAIL] activate_app failed: {str(e)}")
+
         try:
             # Method 2: Try start_activity as fallback
-            driver.start_activity("com.whatsapp", "com.whatsapp.HomeActivity")
+            print("[OPEN] Trying start_activity method...")
+            driver.start_activity("com.whatsapp", "com.whatsapp.home.ui.HomeActivity")
             time.sleep(1.5)
-            
-            print("WhatsApp Business opened using start_activity!")
-            return True
-            
+
+            if wait_for_whatsapp_loaded(driver):
+                print("[SUCCESS] WhatsApp opened using start_activity!")
+                return True
+            else:
+                print("[FAIL] start_activity launched but app not properly loaded")
+
         except Exception as e2:
-            print(f"Failed to open WhatsApp Business with start_activity: {str(e2)}")
-            
-            try:
-                # Method 3: Find and tap WhatsApp Business icon (faster search)
-                print("Searching for WhatsApp Business icon...")
-                
-                # Try multiple possible text variations
-                possible_texts = ["WhatsApp Business", "WA Business", "WhatsApp Biz"]
-                
-                for text in possible_texts:
-                    try:
-                        whatsapp_element = driver.find_element(AppiumBy.XPATH, f"//android.widget.TextView[@text='{text}']")
+            print(f"[FAIL] start_activity failed: {str(e2)}")
+
+        try:
+            # Method 3: Find and tap WhatsApp icon with better detection
+            print("[OPEN] Trying icon tap method...")
+
+            # Enhanced icon search with more selectors
+            icon_selectors = [
+                (AppiumBy.XPATH, "//android.widget.TextView[@text='WhatsApp']"),
+                (AppiumBy.XPATH, "//android.widget.TextView[@text='WA']"),
+                (AppiumBy.XPATH, "//*[contains(@text, 'WhatsApp')]"),
+                (AppiumBy.XPATH, "//*[@content-desc='WhatsApp']"),
+                (AppiumBy.XPATH, "//*[contains(@content-desc, 'WhatsApp')]")
+            ]
+
+            icon_found = False
+            for selector_type, selector in icon_selectors:
+                try:
+                    whatsapp_element = driver.find_element(selector_type, selector)
+                    if whatsapp_element.is_displayed():
                         whatsapp_element.click()
-                        time.sleep(.5)
-                        print(f"WhatsApp Business opened by clicking '{text}' icon!")
-                        return True
-                    except:
-                        continue
-                
-                print("WhatsApp Business icon not found on current screen")
-                return False
-                
-            except Exception as e3:
-                print(f"All methods failed to open WhatsApp Business: {str(e3)}")
-                print("Please ensure WhatsApp Business is installed on the device")
-                return False
+                        time.sleep(1.5)
+
+                        if wait_for_whatsapp_loaded(driver):
+                            print(f"[SUCCESS] WhatsApp opened by tapping icon!")
+                            return True
+                        else:
+                            print(f"[FAIL] Icon tap launched but app not properly loaded")
+                        icon_found = True
+                        break
+                except:
+                    continue
+
+            if not icon_found:
+                print("[FAIL] WhatsApp icon not found on current screen")
+
+        except Exception as e3:
+            print(f"[FAIL] Icon tap method failed: {str(e3)}")
+
+        # If this wasn't the last attempt, wait before retrying
+        if attempt < max_attempts - 1:
+            print(f"[RETRY] All methods failed, waiting before attempt {attempt + 2}...")
+            time.sleep(3)
+
+    print("[ERROR] All attempts failed to open WhatsApp properly")
+    print("Please ensure:")
+    print("1. WhatsApp is installed on the device")
+    print("2. Device has sufficient memory")
+    print("3. WhatsApp has proper permissions")
+    print("4. Device is not in power saving mode")
+    return False
 
 def read_daily_message():
     """Read the daily message from the text file"""
@@ -563,13 +717,41 @@ def transfer_photo_to_device(driver, local_photo_path):
         print(f"[DEBUG] Full error traceback: {traceback.format_exc()}")
         return None
 
+def adaptive_wait(driver, base_delay=1.0, max_delay=5.0):
+    """Intelligent delay based on device performance and network conditions"""
+    try:
+        # Test device responsiveness
+        start_time = time.time()
+        driver.get_window_size()  # Simple responsiveness test
+        response_time = time.time() - start_time
+
+        # Adjust delay based on response time
+        if response_time > 0.5:  # Slow device
+            delay = min(base_delay * 1.5, max_delay)
+            print(f"[DELAY] Slow device detected ({response_time:.2f}s), using {delay:.1f}s delay")
+        elif response_time > 0.2:  # Normal device
+            delay = base_delay
+            print(f"[DELAY] Normal response ({response_time:.2f}s), using {delay:.1f}s delay")
+        else:  # Fast device
+            delay = max(base_delay * 0.7, 0.3)
+            print(f"[DELAY] Fast device ({response_time:.2f}s), using {delay:.1f}s delay")
+
+        time.sleep(delay)
+        return delay
+
+    except Exception as e:
+        # If test fails, use base delay
+        print(f"[DELAY] Responsiveness test failed, using base delay {base_delay}s")
+        time.sleep(base_delay)
+        return base_delay
+
 def send_message_with_photo(driver, message):
-    """Optimized photo + message sending - target: under 8 seconds"""
+    """Optimized photo + message sending with adaptive delays"""
     start_time = time.time()
     print(f"[INFO] Fast photo + message send...")
-    
+
     try:
-        wait = WebDriverWait(driver, timeout=10, poll_frequency=0.2)  #  second timeout for each element
+        wait = WebDriverWait(driver, timeout=12, poll_frequency=0.3)  # Increased timeout, adjusted polling
         
         # Step 1: Click attachment button (parallel search with EC.any_of)
         step_start = time.time()
@@ -586,16 +768,16 @@ def send_message_with_photo(driver, message):
             )
         )
         attachment_btn.click()
-        time.sleep(0.8)  # Reduced from 2s
+        adaptive_wait(driver, 0.8, 2.0)  # Adaptive delay
         print(f"[INFO] Attachment clicked ({time.time() - step_start:.2f}s)")
-        
-        # Step 2: Click Gallery 
+
+        # Step 2: Click Gallery
         step_start = time.time()
         gallery_selectors = [
             (AppiumBy.XPATH, "//*[@text='Gallery']"),
             (AppiumBy.XPATH, "//android.widget.TextView[@text='Gallery']")
         ]
-        
+
         gallery_btn = None
         for selector_type, selector in gallery_selectors:
             try:
@@ -603,19 +785,19 @@ def send_message_with_photo(driver, message):
                 break
             except TimeoutException:
                 continue
-                
+
         if not gallery_btn:
             raise Exception("Gallery button not found")
-            
+
         gallery_btn.click()
-        time.sleep(1)  # Reduced from 3s
+        adaptive_wait(driver, 1.0, 2.0)  # Adaptive delay for gallery loading
         print(f"[INFO] Gallery opened ({time.time() - step_start:.2f}s)")
         
         # Step 3: Select first photo with proper element verification
         step_start = time.time()
         try:
             # Wait for gallery to fully load
-            time.sleep(.5)
+            time.sleep(.2)
 
             # Use simple tap on first photo position - more reliable than element selection
             screen_size = driver.get_window_size()
@@ -629,7 +811,7 @@ def send_message_with_photo(driver, message):
 
             # Use simple tap instead of W3C actions
             driver.tap([(photo_x, photo_y)])
-            time.sleep(.7)  # Wait for photo to be selected
+            adaptive_wait(driver, 0.7, 1.5)  # Adaptive wait for photo selection
             print(f"[INFO] Photo selected via tap ({time.time() - step_start:.2f}s)")
 
         except Exception as e:
@@ -639,7 +821,7 @@ def send_message_with_photo(driver, message):
                 photo_x = 180  # Fixed position that usually works
                 photo_y = 400
                 driver.tap([(photo_x, photo_y)])
-                time.sleep(.7)
+                adaptive_wait(driver, 0.7, 1.5)
                 print(f"[INFO] Photo selected via fallback tap ({time.time() - step_start:.2f}s)")
             except Exception as e2:
                 print(f"[ERROR] All photo selection methods failed: {e2}")
@@ -649,7 +831,7 @@ def send_message_with_photo(driver, message):
         step_start = time.time()
         try:
             # Wait for photo preview to load
-            time.sleep(0.5)
+            adaptive_wait(driver, 0.5, 1.2)
 
             # Tap on caption area at bottom of screen
             screen_size = driver.get_window_size()
@@ -658,7 +840,7 @@ def send_message_with_photo(driver, message):
 
             print(f"[DEBUG] Tapping caption area at: ({caption_x}, {caption_y})")
             driver.tap([(caption_x, caption_y)])
-            time.sleep(.5)  # Wait for keyboard to appear
+            adaptive_wait(driver, 0.5, 1.0)  # Wait for keyboard to appear
             print(f"[INFO] Caption area tapped ({time.time() - step_start:.2f}s)")
 
         except Exception as e:
@@ -833,142 +1015,100 @@ def search_and_find_chat(driver, chat_name):
             if not main_found:
                 # print("[DEBUG] Not on main screen, pressing back to return...")
                 driver.press_keycode(4)  # Back button
-                time.sleep(1)
+                time.sleep(.5)
         except:
             pass
 
-        # Look for search button/icon - try multiple selectors with timeout
-        search_selectors = [
-            # Regular WhatsApp selectors (priority)
-            (AppiumBy.ID, "com.whatsapp:id/menuitem_search"),
-            (AppiumBy.ID, "com.whatsapp:id/search"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/menuitem_search']"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/search']"),
-            # WhatsApp Business specific selectors (fallback)
-            (AppiumBy.ID, "com.whatsapp.w4b:id/search_bar_inner_layout"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/search_bar_inner_layout']"),
-            (AppiumBy.ID, "com.whatsapp.w4b:id/menuitem_search"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/menuitem_search']"),
-            # Generic search selectors
-            (AppiumBy.XPATH, "//*[@content-desc='Search']"),
-            (AppiumBy.XPATH, "//*[contains(@content-desc, 'Search')]"),
-            (AppiumBy.XPATH, "//*[@text='Search']")
-        ]
+        # # Look for search button/icon - try multiple selectors with timeout
+        # search_selectors = [
+        #     # Regular WhatsApp selectors (priority)
+        #     (AppiumBy.ID, "com.whatsapp:id/menuitem_search"),
+        #     (AppiumBy.ID, "com.whatsapp:id/search"),
+        #     (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/menuitem_search']"),
+        #     (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/search']"),
+        #     # WhatsApp specific selectors (fallback)
+        #     (AppiumBy.ID, "com.whatsapp:id/search_bar_inner_layout"),
+        #     (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/search_bar_inner_layout']"),
+        #     (AppiumBy.ID, "com.whatsapp:id/menuitem_search"),
+        #     (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/menuitem_search']"),
+        #     # Generic search selectors
+        #     (AppiumBy.XPATH, "//*[@content-desc='Search']"),
+        #     (AppiumBy.XPATH, "//*[contains(@content-desc, 'Search')]"),
+        #     (AppiumBy.XPATH, "//*[@text='Search']")
+        # ]
 
-        wait = WebDriverWait(driver, 3)
-        search_button = None
+        # wait = WebDriverWait(driver, 3)
+        # search_button = None
 
+        # try:
+        #     # Use EC.any_of for parallel search of all selectors
+        #     search_button = wait.until(
+        #         EC.any_of(
+        #             *[EC.element_to_be_clickable(selector) for selector in search_selectors]
+        #         )
+        #     )
+        #     print(f"[DEBUG] Found search button using parallel search")
+        # except TimeoutException:
+        #     print(f"[DEBUG] Search button not found with any of {len(search_selectors)} selectors")
+
+        # if search_button:
+        #     # Click on search button
+        #     search_button.click()
+        #     time.sleep(.5)
+        #     print("[DEBUG] Search activated successfully")
+        # else:
+        #     print("[DEBUG] Search button not found, trying alternative methods...")
+
+        # Wait for search functionality to be ready and activate it
+        print("[SEARCH] Activating search...")
+        search_activated = False
+
+        # Try WebDriverWait first for search button
         try:
-            # Use EC.any_of for parallel search of all selectors
-            search_button = wait.until(
-                EC.any_of(
-                    *[EC.element_to_be_clickable(selector) for selector in search_selectors]
-                )
-            )
-            print(f"[DEBUG] Found search button using parallel search")
-        except TimeoutException:
-            print(f"[DEBUG] Search button not found with any of {len(search_selectors)} selectors")
+            wait = WebDriverWait(driver, 2)
+            search_element = wait.until(EC.element_to_be_clickable((AppiumBy.ID, "com.whatsapp:id/menuitem_search")))
+            search_element.click()
+            search_activated = True
+            print("[SEARCH] Search activated via element click")
+        except:
+            # Fallback to coordinate tap
+            driver.tap([(525, 330)])
+            search_activated = True
+            print("[SEARCH] Search activated by coordinate tap at (525, 330)")
 
-        if search_button:
-            # Click on search button
-            search_button.click()
-            time.sleep(.5)
-            print("[DEBUG] Search activated successfully")
-        else:
-            print("[DEBUG] Search button not found, trying alternative methods...")
-
-            # Try tapping on typical search icon locations
-            try:
-                screen_size = driver.get_window_size()
-                # Try common search icon positions (top right area)
-                search_locations = [
-                    (screen_size['width'] - 50, 150),  # Top right
-                    (screen_size['width'] - 100, 150), # Slightly left
-                    (screen_size['width'] - 150, 150)  # More left
-                ]
-
-                for x, y in search_locations:
-                    try:
-                        driver.tap([(x, y)])
-                        time.sleep(1)
-                        print(f"[DEBUG] Tried tapping search at ({x}, {y})")
-                        break
-                    except:
-                        continue
-            except:
-                pass
-
-        # Look for search input field with better timeout and more selectors
-        search_input_selectors = [
-            # Regular WhatsApp selectors (priority)
-            (AppiumBy.ID, "com.whatsapp:id/search_src_text"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp:id/search_src_text']"),
-            (AppiumBy.XPATH, "//android.widget.EditText[@resource-id='com.whatsapp:id/search_src_text']"),
-            # WhatsApp Business specific selectors (fallback)
-            (AppiumBy.ID, "com.whatsapp.w4b:id/search_src_text"),
-            (AppiumBy.XPATH, "//*[@resource-id='com.whatsapp.w4b:id/search_src_text']"),
-            (AppiumBy.XPATH, "//android.widget.EditText[@resource-id='com.whatsapp.w4b:id/search_src_text']"),
-            # Generic search input selectors
-            (AppiumBy.XPATH, "//android.widget.EditText[contains(@hint, 'Search')]"),
-            (AppiumBy.XPATH, "//android.widget.EditText"),
-            (AppiumBy.CLASS_NAME, "android.widget.EditText")
-        ]
-
-        wait_input = WebDriverWait(driver, 5)  # Give more time for input to appear
-        search_input = None
-
-        try:
-            # Use EC.any_of for parallel search of all input selectors
-            search_input = wait_input.until(
-                EC.any_of(
-                    *[EC.element_to_be_clickable(selector) for selector in search_input_selectors]
-                )
-            )
-            print(f"[DEBUG] Found search input using parallel search")
-        except TimeoutException:
-            print(f"[DEBUG] Search input not found with any of {len(search_input_selectors)} selectors")
-
-        if not search_input:
-            print("[ERROR] Search input field not found after trying all selectors")
-            print("[DEBUG] Current screen elements:")
-
-            # Debug: Print all EditText elements found
-            try:
-                all_edits = driver.find_elements(AppiumBy.CLASS_NAME, "android.widget.EditText")
-                for i, edit in enumerate(all_edits):
-                    try:
-                        text = edit.text if edit.text else edit.get_attribute("hint")
-                        resource_id = edit.get_attribute("resource-id")
-                        print(f"  EditText[{i}]: text='{text}', resource-id='{resource_id}'")
-                    except:
-                        print(f"  EditText[{i}]: (error getting details)")
-            except:
-                pass
-
-            print("[DEBUG] Taking screenshot for debugging...")
-            try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                screenshot_name = f"debug_search_error_{timestamp}.png"
-                driver.save_screenshot(screenshot_name)
-                print(f"[DEBUG] Screenshot saved as {screenshot_name}")
-            except Exception as e:
-                print(f"[DEBUG] Failed to save screenshot: {e}")
-
+        if not search_activated:
+            print("[ERROR] Failed to activate search")
             return False
 
-        # Clear and enter chat name
-        search_input.click()           # Ensure field is focused
-        time.sleep(0.5)               # Brief pause for keyboard
-        search_input.clear()
-        search_input.send_keys(chat_name)
-        # print(f"Entered search term: {chat_name}")
+        # Wait for search input field to be ready
+        time.sleep(1.0)  # Allow search interface to fully load
 
-        # Wait specifically for either standalone "No results" (truly unavailable) OR chat under "Chats" section
-        print(f"[WAIT] Waiting for chat under 'Chats' section or standalone 'No results'...")
-        time.sleep(.7)
+        # Input Unicode text with better error handling
+        try:
+            # Wait for search field to be available
+            wait = WebDriverWait(driver, 3)
+            try:
+                search_input = wait.until(EC.element_to_be_clickable((AppiumBy.ID, "com.whatsapp:id/search_src_text")))
+                search_input.click()
+                search_input.clear()
+                search_input.send_keys(chat_name)
+                print(f"[SEARCH] Text input via search field element: '{chat_name}'")
+            except:
+                # Fallback to mobile:type
+                driver.execute_script("mobile: type", {"text": chat_name})
+                print(f"[SEARCH] Text input via mobile:type: '{chat_name}'")
+        except Exception as e:
+            print(f"[ERROR] Failed to input search text: {e}")
+            return False
+
+        # Enhanced waiting logic with backend loading consideration
+        print(f"[WAIT] Waiting for backend to process search results...")
+        time.sleep(1.5)  # Initial wait for backend processing
         max_wait_time = 20  # Maximum wait time in seconds
         wait_start = time.time()
         last_message_time = 0  # Track when we last showed a wait message
+        messages_section_count = 0  # Track repeated "Messages section exists" messages
+        max_repeated_messages = 5  # Exit after 5 repeated messages
 
         while (time.time() - wait_start) < max_wait_time:
             try:
@@ -996,43 +1136,13 @@ def search_and_find_chat(driver, chat_name):
                                         # Ensure the chat container is below the "Chats" section
                                         container_location = chat_container.location
                                         if container_location['y'] > chats_location['y']:
-                                            # Check if this container contains EITHER the searched chat name OR "You were added"
-                                            try:
-                                                # First, try to find the exact chat name
-                                                chat_name_in_container = chat_container.find_element(AppiumBy.XPATH, f".//*[contains(@text, '{chat_name}')]")
-                                                if chat_name_in_container.is_displayed():
-                                                    search_time = time.time() - search_start
-                                                    print(f"[\033[92mSUCCESS\033[0m] Chat '{chat_name}' found under 'Chats' section after {search_time:.2f}s")
-                                                    # Click on the verified chat container
-                                                    chat_container.click()
-                                                    print(f"[CLICKED] Opened chat '{chat_name}'")
-                                                    return True
-                                            except:
-                                                # If exact chat name not found, check for "You were added"
-                                                try:
-                                                    you_were_added_element = chat_container.find_element(AppiumBy.XPATH, ".//*[contains(@text, 'You were added')]")
-                                                    if you_were_added_element.is_displayed():
-                                                        search_time = time.time() - search_start
-                                                        print(f"[\033[92mSUCCESS\033[0m] Chat with 'You were added' found for '{chat_name}' under 'Chats' section after {search_time:.2f}s")
-                                                        # Click on the chat container with "You were added"
-                                                        chat_container.click()
-                                                        print(f"[CLICKED] Opened chat with 'You were added' for '{chat_name}'")
-                                                        return True
-                                                except:
-                                                    # Finally, try partial match of chat name
-                                                    try:
-                                                        text_elements = chat_container.find_elements(AppiumBy.XPATH, ".//*[@class='android.widget.TextView']")
-                                                        for text_elem in text_elements:
-                                                            if text_elem.is_displayed():
-                                                                text_content = text_elem.text.lower()
-                                                                if chat_name.lower() in text_content:
-                                                                    search_time = time.time() - search_start
-                                                                    print(f"[\033[92mSUCCESS\033[0m] Chat '{chat_name}' found under 'Chats' section (partial match) after {search_time:.2f}s")
-                                                                    chat_container.click()
-                                                                    print(f"[CLICKED] Opened chat '{chat_name}'")
-                                                                    return True
-                                                    except:
-                                                        continue
+                                            # Click on any chat found under "Chats" section (no name matching required)
+                                            search_time = time.time() - search_start
+                                            print(f"[\033[92mSUCCESS\033[0m] Chat found under 'Chats' section after {search_time:.2f}s")
+                                            # Click on the first available chat container
+                                            chat_container.click()
+                                            print(f"[CLICKED] Opened first available chat")
+                                            return True
                             except:
                                 continue
 
@@ -1059,7 +1169,11 @@ def search_and_find_chat(driver, chat_name):
                         message_section = driver.find_element(AppiumBy.XPATH, "//android.widget.TextView[@resource-id='com.whatsapp:id/title' and @text='Messages']")
                         if message_section.is_displayed():
                             message_section_exists = True
-                            print(f"[DEBUG] 'Messages' section exists - 'No results' under it doesn't mean unavailable")
+                            messages_section_count += 1
+                            if messages_section_count <= 3:  # Only print first 3 times
+                                print(f"[DEBUG] 'Messages' section exists - 'No results' under it doesn't mean unavailable")
+                            elif messages_section_count == 4:
+                                print(f"[DEBUG] 'Messages' section still exists - reducing debug output...")
                     except:
                         pass
 
@@ -1070,6 +1184,16 @@ def search_and_find_chat(driver, chat_name):
                             print(f"[DEBUG] 'Chats' section exists - still checking for chats")
                     except:
                         pass
+
+                    # Early exit if we've seen "Messages section exists" too many times
+                    if messages_section_count >= max_repeated_messages:
+                        search_time = time.time() - search_start
+                        print(f"[EARLY_EXIT] Seen 'Messages section' {messages_section_count} times with no results - chat likely doesn't exist")
+                        print(f"[EARLY_EXIT] Exiting search after {search_time:.2f}s instead of waiting full timeout")
+                        # Go back to main screen before returning
+                        driver.press_keycode(4)  # Back button
+                        time.sleep(0.5)
+                        return False
 
                     # Only consider "No results" as truly unavailable when NO sections exist
                     if not message_section_exists and not chats_section_exists:
@@ -1093,7 +1217,7 @@ def search_and_find_chat(driver, chat_name):
                             except:
                                 continue
                     else:
-                        if message_section_exists:
+                        if message_section_exists and messages_section_count <= 3:
                             print(f"[DEBUG] 'Messages' section exists - ignoring any 'No results' under it")
                         if chats_section_exists:
                             print(f"[DEBUG] 'Chats' section exists - continuing to wait for chat")
@@ -1198,9 +1322,12 @@ def process_target_chats(driver):
         # Check if driver session is still alive before processing
         if not is_driver_alive(driver):
             print(f"[WARNING] Driver session lost, attempting recovery...")
-            driver = recover_session(driver)
-            if not driver:
-                print(f"[ERROR] Session recovery failed, stopping automation")
+            recovered_driver = recover_session(driver, max_attempts=3)
+            if recovered_driver:
+                driver = recovered_driver
+                print("[RECOVERY] Session recovered, continuing with automation")
+            else:
+                print(f"[ERROR] Session recovery failed after multiple attempts, stopping automation")
                 break
             # Re-transfer photo if needed after session recovery
             if photo_path and send_photo:
@@ -1220,18 +1347,27 @@ def process_target_chats(driver):
         # Clean the chat name (remove prefix) before searching
         clean_name = clean_chat_name(target_chat_name)
 
-        # Search for the specific chat using search functionality with error handling
+        # Search for the specific chat using search functionality with enhanced error handling
         search_start = time.time()
         try:
-            chat_found = search_and_find_chat(driver, clean_name)
+            chat_found = safe_operation(search_and_find_chat, driver, clean_name, retry_count=1)
         except Exception as search_error:
             print(f"[ERROR] Search function failed: {search_error}")
-            # Try session recovery
-            driver = recover_session(driver)
-            if driver:
-                try:
-                    chat_found = search_and_find_chat(driver, clean_name)
-                except:
+            # Try session recovery if it's a driver-related error
+            driver_errors = ["session", "connection", "socket", "timeout", "network"]
+            if any(error_term in str(search_error).lower() for error_term in driver_errors):
+                print("[ERROR] Detected driver-related error, attempting session recovery...")
+                recovered_driver = recover_session(driver, max_attempts=2)
+                if recovered_driver:
+                    driver = recovered_driver
+                    print("[RECOVERY] Retrying search after session recovery...")
+                    try:
+                        chat_found = search_and_find_chat(driver, clean_name)
+                    except Exception as retry_error:
+                        print(f"[ERROR] Search retry failed: {retry_error}")
+                        chat_found = False
+                else:
+                    print("[ERROR] Session recovery failed")
                     chat_found = False
             else:
                 chat_found = False
@@ -1371,7 +1507,7 @@ def main():
         if success:
             print("Device is ready for automation!")
             
-            # Open WhatsApp Business after successful unlock
+            # Open WhatsApp after successful unlock
             whatsapp_success = open_whatsapp_business(driver)
             
             if whatsapp_success:
@@ -1383,7 +1519,7 @@ def main():
                 process_target_chats(driver)
                 
             else:
-                print("Failed to open WhatsApp Business, but device is unlocked")
+                print("Failed to open WhatsApp, but device is unlocked")
             
         else:
             print("Unable to fully unlock device")
