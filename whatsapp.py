@@ -10,6 +10,7 @@ import time
 import os
 import base64
 import signal
+import subprocess
 from datetime import datetime, timezone, timedelta
 
 # GMT+7 timezone
@@ -17,6 +18,232 @@ GMT_PLUS_7 = timezone(timedelta(hours=7))
 
 # Configuration: Chat name prefix to remove before searching
 CHAT_NAME_PREFIX_TO_REMOVE = "NepalWin🇳🇵"  # Change this to customize what prefix to remove
+
+# Device-specific coordinate configurations
+DEVICE_CONFIGS = {
+    "Redmi Note 13 Pro": {
+        "photo_select_x": 180,
+        "photo_select_y": 1350,
+        "photo_select_fallback_x": 180,
+        "photo_select_fallback_y": 400,
+        "caption_area_x_offset": 0,  # Offset from center, 0 means use center
+        "caption_area_y": 2330,
+        "caption_fallback_x": 360,
+        "caption_fallback_y": 1400,
+        "send_button_x": 990,
+        "send_button_y": 2310,
+        "search_button_x": 525,
+        "search_button_y": 330
+    },
+
+    "Redmi 9A": {
+        "photo_select_x": 120,
+        "photo_select_y": 670,
+        "photo_select_fallback_x": 180,
+        "photo_select_fallback_y": 400,
+        "caption_area_x_offset": 0,  # Offset from center, 0 means use center
+        "caption_area_y": 1533,
+        "caption_fallback_x": 360,
+        "caption_fallback_y": 1400,
+        "send_button_x": 650,
+        "send_button_y": 1533,
+        "search_button_x": 525,
+        "search_button_y": 225
+    }
+
+    # Add your custom device configurations here
+    # Example:
+    # "Samsung Galaxy S21": {
+    #     "photo_select_x": 200,
+    #     "photo_select_y": 1400,
+    #     ...
+    # }
+}
+
+# Global variable to store selected device configuration
+# Initialize with default to prevent None errors
+SELECTED_DEVICE_CONFIG = None
+
+# Global variable to store selected ADB device UDID
+SELECTED_ADB_DEVICE = None
+
+def get_device_config():
+    """Get current device config, fallback to default if not set"""
+    global SELECTED_DEVICE_CONFIG
+    if SELECTED_DEVICE_CONFIG is None:
+        print("[WARNING] Device config not set, using default")
+        SELECTED_DEVICE_CONFIG = DEVICE_CONFIGS["default"]
+    return SELECTED_DEVICE_CONFIG
+
+def select_device_config():
+    """Interactive device selection menu"""
+    global SELECTED_DEVICE_CONFIG
+
+    print("\n" + "="*60)
+    print("[DEVICE] DEVICE CONFIGURATION SETUP")
+    print("="*60)
+
+    # List all available device configurations
+    device_names = list(DEVICE_CONFIGS.keys())
+
+    print("\n[DEVICE] Available device configurations:")
+    for idx, device_name in enumerate(device_names, 1):
+        print(f"{idx}. {device_name}")
+
+    print(f"\n[DEVICE] Enter device number (1-{len(device_names)}) or press ENTER for default:")
+
+    while True:
+        try:
+            choice = input("Device selection: ").strip()
+
+            # Default choice
+            if choice == "":
+                selected_device = "default"
+                print(f"[DEVICE] Using default device configuration")
+                break
+
+            # Validate numeric choice
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(device_names):
+                selected_device = device_names[choice_num - 1]
+                print(f"[DEVICE] Selected device: {selected_device}")
+                break
+            else:
+                print(f"[ERROR] Please enter a number between 1 and {len(device_names)}")
+
+        except ValueError:
+            print("[ERROR] Please enter a valid number or press ENTER for default")
+        except KeyboardInterrupt:
+            print("\n[ERROR] Device selection cancelled")
+            return None
+
+    SELECTED_DEVICE_CONFIG = DEVICE_CONFIGS[selected_device]
+
+    # Display selected coordinates
+    print(f"\n[DEVICE] Loaded coordinates for '{selected_device}':")
+    print(f"   - Photo select: ({SELECTED_DEVICE_CONFIG['photo_select_x']}, {SELECTED_DEVICE_CONFIG['photo_select_y']})")
+    print(f"   - Caption area Y: {SELECTED_DEVICE_CONFIG['caption_area_y']}")
+    print(f"   - Send button: ({SELECTED_DEVICE_CONFIG['send_button_x']}, {SELECTED_DEVICE_CONFIG['send_button_y']})")
+    print(f"   - Search button: ({SELECTED_DEVICE_CONFIG['search_button_x']}, {SELECTED_DEVICE_CONFIG['search_button_y']})")
+    print("="*60)
+
+    return SELECTED_DEVICE_CONFIG
+
+def get_adb_devices():
+    """Get list of connected ADB devices"""
+    try:
+        result = subprocess.run(['adb', 'devices', '-l'],
+                              capture_output=True,
+                              text=True,
+                              check=True)
+
+        lines = result.stdout.strip().split('\n')
+        devices = []
+
+        # Skip first line "List of devices attached"
+        for line in lines[1:]:
+            if line.strip() and 'device' in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    udid = parts[0]
+                    # Extract model and product info if available
+                    model = "Unknown"
+                    product = "Unknown"
+
+                    for part in parts:
+                        if part.startswith('model:'):
+                            model = part.split(':')[1]
+                        elif part.startswith('product:'):
+                            product = part.split(':')[1]
+
+                    devices.append({
+                        'udid': udid,
+                        'model': model,
+                        'product': product
+                    })
+
+        return devices
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to get ADB devices: {e}")
+        return []
+    except FileNotFoundError:
+        print("[ERROR] ADB command not found. Please ensure ADB is installed and in PATH.")
+        return []
+
+def select_adb_device():
+    """Interactive ADB device selection menu"""
+    global SELECTED_ADB_DEVICE
+
+    print("\n" + "="*60)
+    print("[ADB] ADB DEVICE SELECTION")
+    print("="*60)
+
+    devices = get_adb_devices()
+
+    if not devices:
+        print("[ERROR] No ADB devices found!")
+        print("Please ensure:")
+        print("  1. Device is connected via USB")
+        print("  2. USB debugging is enabled")
+        print("  3. Run 'adb devices' to verify connection")
+        return None
+
+    if len(devices) == 1:
+        # Only one device, auto-select it
+        device = devices[0]
+        SELECTED_ADB_DEVICE = device['udid']
+        print(f"[ADB] Only one device found, auto-selecting:")
+        print(f"   - UDID: {device['udid']}")
+        print(f"   - Model: {device['model']}")
+        print(f"   - Product: {device['product']}")
+        print("="*60)
+        return SELECTED_ADB_DEVICE
+
+    # Multiple devices, show selection menu
+    print(f"\n[ADB] Found {len(devices)} connected devices:")
+    for idx, device in enumerate(devices, 1):
+        print(f"{idx}. UDID: {device['udid']}")
+        print(f"   Model: {device['model']}")
+        print(f"   Product: {device['product']}")
+        print()
+
+    print(f"[ADB] Enter device number (1-{len(devices)}) or press ENTER for first device:")
+
+    while True:
+        try:
+            choice = input("Device selection: ").strip()
+
+            # Default choice (first device)
+            if choice == "":
+                selected_device = devices[0]
+                print(f"[ADB] Using first device: {selected_device['udid']}")
+                break
+
+            # Validate numeric choice
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(devices):
+                selected_device = devices[choice_num - 1]
+                print(f"[ADB] Selected device: {selected_device['udid']}")
+                break
+            else:
+                print(f"[ERROR] Please enter a number between 1 and {len(devices)}")
+
+        except ValueError:
+            print("[ERROR] Please enter a valid number or press ENTER for default")
+        except KeyboardInterrupt:
+            print("\n[ERROR] Device selection cancelled")
+            return None
+
+    SELECTED_ADB_DEVICE = selected_device['udid']
+
+    # Display selected device info
+    print(f"\n[ADB] Selected Device Details:")
+    print(f"   - UDID: {selected_device['udid']}")
+    print(f"   - Model: {selected_device['model']}")
+    print(f"   - Product: {selected_device['product']}")
+    print("="*60)
+
+    return SELECTED_ADB_DEVICE
 
 def clean_chat_name(chat_name):
     """Remove configured prefix from chat name for searching and handle various formats"""
@@ -104,6 +331,8 @@ def signal_handler(sig, frame):
 
 def setup_driver():
     """Initialize Appium driver with Android capabilities"""
+    global SELECTED_ADB_DEVICE
+
     options = UiAutomator2Options()
     options.platform_name = "Android"
     options.device_name = "Android Device"
@@ -112,6 +341,13 @@ def setup_driver():
     options.app_activity = "com.whatsapp.home.ui.HomeActivity"
     options.no_reset = True
     options.full_reset = False
+
+    # Set specific device UDID if selected
+    if SELECTED_ADB_DEVICE:
+        options.udid = SELECTED_ADB_DEVICE
+        print(f"[DRIVER] Using device UDID: {SELECTED_ADB_DEVICE}")
+    else:
+        print("[WARNING] No specific device UDID set, using default device")
 
     # Add session stability options
     options.new_command_timeout = 300  # 5 minutes timeout
@@ -802,9 +1038,10 @@ def send_message_with_photo(driver, message):
             # Use simple tap on first photo position - more reliable than element selection
             screen_size = driver.get_window_size()
 
-            # Use specific coordinates for photo selection
-            photo_x = 180   # Fixed X coordinate
-            photo_y = 1350  # Fixed Y coordinate
+            # Use device-specific coordinates for photo selection
+            config = get_device_config()
+            photo_x = config['photo_select_x']
+            photo_y = config['photo_select_y']
 
             print(f"[DEBUG] Screen size: {screen_size['width']}x{screen_size['height']}")
             print(f"[DEBUG] Tapping photo at: ({photo_x}, {photo_y})")
@@ -816,10 +1053,11 @@ def send_message_with_photo(driver, message):
 
         except Exception as e:
             print(f"[ERROR] Photo selection failed: {e}")
-            # Try alternative position
+            # Try alternative position using device-specific fallback coordinates
             try:
-                photo_x = 180  # Fixed position that usually works
-                photo_y = 400
+                config = get_device_config()
+                photo_x = config['photo_select_fallback_x']
+                photo_y = config['photo_select_fallback_y']
                 driver.tap([(photo_x, photo_y)])
                 adaptive_wait(driver, 0.7, 1.5)
                 print(f"[INFO] Photo selected via fallback tap ({time.time() - step_start:.2f}s)")
@@ -835,8 +1073,10 @@ def send_message_with_photo(driver, message):
 
             # Tap on caption area at bottom of screen
             screen_size = driver.get_window_size()
-            caption_x = screen_size['width'] // 2  # Center of screen
-            caption_y = 2330  # Fixed Y coordinate for caption area
+            # Use device-specific X coordinate (with optional offset from center)
+            config = get_device_config()
+            caption_x = screen_size['width'] // 2 + config['caption_area_x_offset']
+            caption_y = config['caption_area_y']
 
             print(f"[DEBUG] Tapping caption area at: ({caption_x}, {caption_y})")
             driver.tap([(caption_x, caption_y)])
@@ -845,9 +1085,12 @@ def send_message_with_photo(driver, message):
 
         except Exception as e:
             print(f"[ERROR] Caption tap failed: {e}")
-            # Try alternative caption position
+            # Try alternative caption position using device-specific fallback
             try:
-                driver.tap([(360, 1400)])  # Alternative fixed position
+                config = get_device_config()
+                caption_fallback_x = config['caption_fallback_x']
+                caption_fallback_y = config['caption_fallback_y']
+                driver.tap([(caption_fallback_x, caption_fallback_y)])
                 time.sleep(.5)
                 print(f"[INFO] Caption area tapped via fallback")
             except:
@@ -868,9 +1111,10 @@ def send_message_with_photo(driver, message):
         try:
             print(f"[DEBUG] Using direct coordinate tap for send button...")
 
-            # Use specific coordinates for send button
-            send_x = 990   # Fixed X coordinate for send button
-            send_y = 2310  # Fixed Y coordinate for send button
+            # Use device-specific coordinates for send button
+            config = get_device_config()
+            send_x = config['send_button_x']
+            send_y = config['send_button_y']
 
             print(f"[DEBUG] Tapping send button at: ({send_x}, {send_y})")
             click_start = time.time()
@@ -1071,10 +1315,13 @@ def search_and_find_chat(driver, chat_name):
             search_activated = True
             print("[SEARCH] Search activated via element click")
         except:
-            # Fallback to coordinate tap
-            driver.tap([(525, 330)])
+            # Fallback to coordinate tap using device-specific coordinates
+            config = get_device_config()
+            search_x = config['search_button_x']
+            search_y = config['search_button_y']
+            driver.tap([(search_x, search_y)])
             search_activated = True
-            print("[SEARCH] Search activated by coordinate tap at (525, 330)")
+            print(f"[SEARCH] Search activated by coordinate tap at ({search_x}, {search_y})")
 
         if not search_activated:
             print("[ERROR] Failed to activate search")
@@ -1131,18 +1378,72 @@ def search_and_find_chat(driver, chat_name):
                         for selector in chat_container_selectors:
                             try:
                                 chat_containers = driver.find_elements(*selector)
+                                visible_chats = []
+
+                                # First, collect all visible chats under the "Chats" section
                                 for chat_container in chat_containers:
                                     if chat_container.is_displayed():
-                                        # Ensure the chat container is below the "Chats" section
                                         container_location = chat_container.location
                                         if container_location['y'] > chats_location['y']:
-                                            # Click on any chat found under "Chats" section (no name matching required)
-                                            search_time = time.time() - search_start
-                                            print(f"[\033[92mSUCCESS\033[0m] Chat found under 'Chats' section after {search_time:.2f}s")
-                                            # Click on the first available chat container
-                                            chat_container.click()
-                                            print(f"[CLICKED] Opened first available chat")
-                                            return True
+                                            visible_chats.append(chat_container)
+
+                                # If only one chat found, click it directly without verification
+                                if len(visible_chats) == 1:
+                                    search_time = time.time() - search_start
+                                    print(f"[\033[92mSUCCESS\033[0m] Single chat found under 'Chats' section after {search_time:.2f}s")
+                                    visible_chats[0].click()
+                                    print(f"[CLICKED] Opened chat (single result, no verification needed)")
+                                    return True
+
+                                # If multiple chats found, verify which one matches
+                                elif len(visible_chats) > 1:
+                                    print(f"[VERIFY] Multiple chats found ({len(visible_chats)}), verifying matches...")
+                                    matching_chats = []
+
+                                    for chat_container in visible_chats:
+                                        try:
+                                            # Look for chat name text within this container
+                                            chat_name_selectors = [
+                                                (AppiumBy.XPATH, ".//android.widget.TextView[@resource-id='com.whatsapp:id/conversations_row_contact_name']"),
+                                                (AppiumBy.XPATH, ".//android.widget.TextView[contains(@resource-id, 'contact_name')]"),
+                                                (AppiumBy.XPATH, ".//android.widget.TextView")
+                                            ]
+
+                                            found_chat_name = None
+                                            for name_selector in chat_name_selectors:
+                                                try:
+                                                    name_element = chat_container.find_element(*name_selector)
+                                                    found_chat_name = name_element.text
+                                                    if found_chat_name:
+                                                        break
+                                                except:
+                                                    continue
+
+                                            if found_chat_name:
+                                                # Check if the found chat name contains our search keyword
+                                                if chat_name.lower() in found_chat_name.lower():
+                                                    matching_chats.append((chat_container, found_chat_name))
+                                                    print(f"[MATCH] Found matching chat: '{found_chat_name}' (contains '{chat_name}')")
+                                                else:
+                                                    print(f"[SKIP] Chat '{found_chat_name}' doesn't match search term '{chat_name}'")
+                                            else:
+                                                # If we can't extract the name, add it as a fallback option
+                                                matching_chats.append((chat_container, "Unknown"))
+                                                print(f"[FALLBACK] Found chat without readable name, added as fallback")
+                                        except Exception as extract_error:
+                                            # If name extraction fails, add as fallback
+                                            matching_chats.append((chat_container, "Unknown"))
+                                            print(f"[FALLBACK] Error extracting name: {extract_error}")
+
+                                    # If we found matching chats, click the first one
+                                    if matching_chats:
+                                        first_match = matching_chats[0]
+                                        search_time = time.time() - search_start
+                                        print(f"[\033[92mSUCCESS\033[0m] Verified chat match: '{first_match[1]}' after {search_time:.2f}s")
+                                        first_match[0].click()
+                                        print(f"[CLICKED] Opened verified matching chat")
+                                        return True
+
                             except:
                                 continue
 
@@ -1496,9 +1797,21 @@ def process_target_chats(driver):
 def main():
     """Main function to control screen and unlock"""
     driver = None
-    
+
     try:
-        print("Starting Appium session...")
+        # First, select ADB device
+        adb_device = select_adb_device()
+        if adb_device is None:
+            print("[ERROR] No ADB device selected. Exiting...")
+            return
+
+        # Second, select device configuration (coordinate settings)
+        device_config = select_device_config()
+        if device_config is None:
+            print("[ERROR] No device configuration selected. Exiting...")
+            return
+
+        print("\nStarting Appium session...")
         driver = setup_driver()
         
         print("Attempting to turn on screen and unlock device...")
