@@ -45,7 +45,8 @@
       "Bash(tasklist)",
       "Bash(taskkill:*)",
       "Bash(start appium)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(\"C:/Users/BDC Computer ll/AppData/Local/Programs/Python/Python313/python.exe\" \"C:\\Users\\BDC Computer ll\\Documents\\Appium-test\\remove_nepalwin.py\")"
     ],
     "deny": [],
     "defaultMode": "acceptEdits"
